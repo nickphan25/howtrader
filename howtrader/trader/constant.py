@@ -89,7 +89,7 @@ class Exchange(Enum):
     BITFINEX = "BITFINEX"
     BINANCE = "BINANCE"
     BYBIT = "BYBIT"  # bybit.com
-
+    HUOBI = "HUOBI"
     # Special Function
     LOCAL = "LOCAL"         # For local generated data
 

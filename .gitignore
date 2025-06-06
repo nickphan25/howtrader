@@ -33,6 +33,8 @@ _templates
 
 # Misc
 .DS_Store
+Thumbs.db
+desktop.ini
 
 howtrader/log/*
 main_window.spec

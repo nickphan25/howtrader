@@ -173,11 +173,11 @@ def download_future(symbol):
 
     """
 
-    t1 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2020-1-1", "2020-6-1"))
-    t2 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2020-6-1", "2020-12-1"))
-    t3 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2020-12-1", "2021-6-1"))
-    t4 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2021-6-1", "2021-12-1"))
-    t5 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2021-12-1", "2022-6-28"))
+    t1 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2023-1-1", "2023-6-1"))
+    t2 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2023-6-1", "2023-12-1"))
+    t3 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2023-12-1", "2024-6-1"))
+    t4 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2024-6-1", "2024-12-1"))
+    t5 = Thread(target=get_binance_data, args=(symbol, 'usdt_future', "2024-12-1", "2025-6-1"))
 
     t1.start()
     t2.start()
@@ -211,11 +211,11 @@ if __name__ == '__main__':
 
     # set your proxy_host
     # 如果没有就设置为 None, 如果有就设置为你的代理主机如：127.0.0.1
-    proxy_host = "127.0.0.1"
+    proxy_host = None
 
     # set it to your proxy_port
     # 设置你的代理端口号如: 1087, 没有你修改为0,但是要保证你能访问api.binance.com这个主机。
-    proxy_port = 1087
+    proxy_port = 0
 
     proxies = None
     if proxy_host and proxy_port:
@@ -224,7 +224,7 @@ if __name__ == '__main__':
 
     download_future(symbol="BTCUSDT")  # crawl usdt_future data. 下载合约的数据
 
-    download_spot(symbol="BTCUSDT")  # crawl binance spot data.
+    # download_spot(symbol="BTCUSDT")  # crawl binance spot data.
 
 
 

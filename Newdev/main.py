@@ -8,8 +8,7 @@ from howtrader.trader.ui import MainWindow, create_qapp
 from howtrader.trader.setting import SETTINGS
 from howtrader.gateway.binance import BinanceUsdtGateway, BinanceSpotGateway, BinanceInverseGateway
 from howtrader.gateway.okx import OkxGateway
-# from howtrader1.gateway import huobi
-# from howtrader1.gateway.huobi import HuobiSpotGateway, HuobiInverseGateway
+from howtrader.gateway.huobi import HuobiSpotGateway, HuobiFuturesGateway, HuobiUsdtGateway
 from howtrader.app.cta_strategy import CtaStrategyApp
 from howtrader.app.data_manager import DataManagerApp
 from howtrader.app.cta_strategy import backtesting
@@ -59,8 +58,9 @@ def main():
     main_engine.add_gateway(BinanceUsdtGateway)
     main_engine.add_gateway(BinanceInverseGateway)
     main_engine.add_gateway(okx.OkxGateway)
-    # main_engine.add_gateway(HuobiSpotGateway)
-    # main_engine.add_gateway(HuobiInverseGateway)
+    main_engine.add_gateway(HuobiSpotGateway)
+    main_engine.add_gateway(HuobiFuturesGateway)
+    main_engine.add_gateway(HuobiUsdtGateway)
     main_engine.add_app(CtaStrategyApp)
     main_engine.add_app(TradingViewApp)
 
