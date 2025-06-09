@@ -9,8 +9,8 @@ import pyqtgraph as pg
 import numpy as np
 from datetime import datetime, timedelta
 
-from backtest_display.config.display_config import DisplayConfig
-from demo_backtest_display import MarkerManager
+from noteuse.config.display_config import DisplayConfig
+from .demo_backtest_display import MarkerManager
 
 class BacktestChartDemo(QMainWindow):
     def __init__(self):

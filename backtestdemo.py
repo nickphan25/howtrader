@@ -8,8 +8,8 @@ engine = BacktestingEngine()
 engine.set_parameters(
     vt_symbol="BTCUSDT.BINANCE",
     interval=Interval.MINUTE,
-    start=datetime(2025, 3, 1),
-    end=datetime(2025, 5, 5),
+    start=datetime(2025, 4, 1),
+    end=datetime(2025, 5, 1),
     rate=4/10000,
     slippage=0,
     size=1,
@@ -25,7 +25,7 @@ engine.run_backtesting()
 df = engine.calculate_result()
 engine.calculate_statistics()
 engine.show_chart()
-
+engine.show_widget()
 # setting = OptimizationSetting()
 # setting.set_target("sharpe_ratio")
 # setting.add_parameter("atr_length", 3, 39, 1)
