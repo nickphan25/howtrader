@@ -218,64 +218,100 @@ class VolumeBarItem(pg.GraphicsObject):
 
 
 class ImprovedTimeAxis(pg.AxisItem):
-    """Improved time axis"""
+    """Improved time axis with debug support"""
 
     def __init__(self, timestamps, interval, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.timestamps = timestamps
         self.interval = interval
+        self.timestamps_len = len(timestamps)
         self.setPen(color='#e1e8ed', width=1)
         self.setTextPen(color='#1e293b')
 
     def tickStrings(self, values, scale, spacing):
         strings = []
+        successful_conversions = 0
 
-        for v in values:
+        # Define lookback distances for date change detection
+        LOOKBACK_DISTANCE = {
+            Interval.MINUTE: 15,  # 15 minutes back
+            Interval.MINUTE_5: 12,  # 1 hour back
+            Interval.MINUTE_15: 4,  # 1 hour back
+            Interval.MINUTE_30: 2,  # 1 hour back
+            Interval.HOUR: 6,  # 6 hours back
+            Interval.HOUR_4: 2,  # 8 hours back
+        }
+
+        for i, v in enumerate(values):
             try:
                 index = int(v)
-                if 0 <= index < len(self.timestamps):
-                    dt = self.timestamps[index]
-
-                    if self.interval == Interval.MINUTE:
-                        if index > 0:
-                            prev_dt = self.timestamps[max(0, index - 20)]
-                            if dt.date() == prev_dt.date():
-                                time_str = dt.strftime('%H:%M')
-                            else:
-                                time_str = dt.strftime('%m/%d\n%H:%M')
-                        else:
-                            time_str = dt.strftime('%H:%M')
-
-                    elif self.interval in [Interval.MINUTE_5, Interval.MINUTE_15, Interval.MINUTE_30]:
-                        if index > 0:
-                            prev_index = max(0, index - 10)
-                            prev_dt = self.timestamps[prev_index]
-                            if dt.date() != prev_dt.date():
-                                time_str = dt.strftime('%m/%d\n%H:%M')
-                            else:
-                                time_str = dt.strftime('%H:%M')
-                        else:
-                            time_str = dt.strftime('%H:%M')
-
-                    elif self.interval in [Interval.HOUR, Interval.HOUR_4]:
-                        time_str = dt.strftime('%m/%d\n%H:%M')
-                    elif self.interval == Interval.DAILY:
-                        time_str = dt.strftime('%m/%d')
-                    elif self.interval == Interval.WEEKLY:
-                        time_str = dt.strftime('%m/%d')
-                    elif self.interval == Interval.MONTH:
-                        time_str = dt.strftime('%m/%Y')
-                    else:
-                        time_str = dt.strftime('%m/%d')
-
-                    strings.append(time_str)
-                else:
+                if not (0 <= index < self.timestamps_len):
                     strings.append('')
-            except (ValueError, IndexError, AttributeError):
+                    continue
+
+                # Convert timestamp to datetime
+                timestamp = self.timestamps[index]
+                if isinstance(timestamp, (int, float)):
+                    dt = datetime.fromtimestamp(timestamp)
+                else:
+                    dt = timestamp  # Already datetime object
+
+                time_str = self._format_timestamp(dt, index, LOOKBACK_DISTANCE)
+                strings.append(time_str)
+                successful_conversions += 1
+
+            except Exception as e:
+                print(f"  ❌ [{i}] Failed to convert {v}: {e}")
                 strings.append('')
 
         return strings
 
+    def _format_timestamp(self, dt, index, lookback_distances):
+        """Format timestamp optimized for trading charts"""
+
+        # Intraday intervals with smart date detection
+        if self.interval in [Interval.MINUTE, Interval.MINUTE_5,
+                             Interval.MINUTE_15, Interval.MINUTE_30]:
+            return self._format_with_date_check(dt, index,
+                                                lookback_distances.get(self.interval, 10))
+
+        # Hourly intervals - always show date for clarity
+        elif self.interval in [Interval.HOUR, Interval.HOUR_4]:
+            if self.interval in lookback_distances:
+                return self._format_with_date_check(dt, index,
+                                                    lookback_distances[self.interval])
+            else:
+                return dt.strftime('%m/%d\n%H:%M')
+
+        # Daily and higher - date only formats
+        elif self.interval == Interval.DAILY:
+            return dt.strftime('%m/%d')
+        elif self.interval == Interval.WEEKLY:
+            return dt.strftime('%m/%d')
+        elif self.interval == Interval.MONTH:
+            return dt.strftime('%m/%Y')
+        else:
+            return dt.strftime('%m/%d')
+
+    def _format_with_date_check(self, dt, index, lookback_distance):
+        """Format time with intelligent date change detection for trading"""
+        if index == 0:
+            return dt.strftime('%H:%M')
+
+        prev_index = max(0, index - lookback_distance)
+
+        # Convert previous timestamp
+        prev_timestamp = self.timestamps[prev_index]
+        if isinstance(prev_timestamp, (int, float)):
+            prev_dt = datetime.fromtimestamp(prev_timestamp)
+        else:
+            prev_dt = prev_timestamp
+
+        # Show date when crossing day boundary
+        if dt.date() != prev_dt.date():
+            return dt.strftime('%m/%d\n%H:%M')
+        else:
+            return dt.strftime('%H:%M')
 
 class IndicatorItem(pg.GraphicsObject):
     """Technical indicator display item"""
@@ -440,19 +476,15 @@ class HowtraderTimeframeConverter:
     def _get_conversion_params(self, target_interval):
         """Get conversion parameters for target interval"""
         conversion_map = {
-            Interval.MINUTE_3: (3, True),
-            Interval.MINUTE_5: (5, True),
-            Interval.MINUTE_15: (15, True),
-            Interval.MINUTE_30: (30, True),
-            Interval.HOUR: (60, True),
-            Interval.HOUR_2: (120, True),
-            Interval.HOUR_4: (240, True),
-            Interval.HOUR_6: (360, True),
-            Interval.HOUR_8: (480, True),
-            Interval.HOUR_12: (720, True),
-            Interval.DAILY: (1440, False),
-            Interval.WEEKLY: (10080, False),
-            Interval.MONTH: (43200, False)
+            Interval.MINUTE_3: (1, True),
+            Interval.MINUTE_5: (1, True),
+            Interval.MINUTE_15: (1, True),
+            Interval.MINUTE_30: (1, True),
+            Interval.HOUR: (1, True),
+            Interval.HOUR_4: (1, True),
+            Interval.DAILY: (1, False),
+            Interval.WEEKLY: (1, False),
+            Interval.MONTH: (1, False)
         }
 
         return conversion_map.get(target_interval, (1, False))
@@ -597,306 +629,67 @@ class HowtraderTimeframeConverter:
 
 
 class HowtraderIndicatorCalculator:
-    """🔥 ENHANCED: Use ArrayManager + TA-Lib for indicator calculations"""
+    """🔧 FIXED: Enhanced indicator calculator with proper ArrayManager handling"""
 
-    def __init__(self, max_size=1000):
-        self.array_manager = ArrayManager(size=max_size)
-        self.initialized = False
+    def __init__(self, parent_widget):
+        self.parent = parent_widget
 
-    def update_bars(self, bars):
-        """Update ArrayManager with bar data"""
+    def calculate_indicator(self, name, params, data_len):
+        """Calculate indicator with proper ArrayManager handling"""
         try:
-            # Reset ArrayManager
-            self.array_manager = ArrayManager(size=len(bars) + 100)
+            # ✅ Ensure ArrayManager is available and initialized
+            if not hasattr(self.parent, 'array_manager'):
+                print(f"❌ No ArrayManager found for {name}")
+                return None
 
-            # Feed all bars to ArrayManager
-            for bar in bars:
-                self.array_manager.update_bar(bar)
+            array_manager = self.parent.array_manager
 
-            self.initialized = self.array_manager.inited
-            print(f"✅ ArrayManager updated with {len(bars)} bars, initialized: {self.initialized}")
+            if not array_manager.inited:
+                print(f"⚠️ ArrayManager not initialized for {name}")
+                # Try to initialize it
+                if hasattr(self.parent, 'bars') and self.parent.bars:
+                    print(f"🔧 Force initializing ArrayManager...")
+                    for bar in self.parent.bars:
+                        array_manager.update_bar(bar)
+                else:
+                    return None
 
-        except Exception as e:
-            print(f"❌ Error updating ArrayManager: {e}")
-            self.initialized = False
+            print(f"📊 ArrayManager status: count={array_manager.count}, inited={array_manager.inited}")
 
-    def calculate_indicator(self, name, params, data_length):
-        """Calculate indicator using ArrayManager + TA-Lib"""
-        if not self.initialized:
-            print(f"⚠️ ArrayManager not initialized for {name}")
-            return np.full(data_length, np.nan)
-
-        try:
-            period = params.get('period', 20)
-
+            # Calculate indicators based on type
             if name == 'EMA':
-                return self._calculate_ema_full(period, data_length)
-            elif name == 'SMA':
-                return self._calculate_sma_full(period, data_length)
+                period = params.get('period', 20)
+                if array_manager.count >= period:
+                    values = talib.EMA(array_manager.close_array, timeperiod=period)
+                    # ✅ Return valid values only (remove NaN)
+                    return values[~np.isnan(values)]
+
             elif name == 'RSI':
-                return self._calculate_rsi_full(period, data_length)
-            elif name == 'MACD':
-                return self._calculate_macd_full(data_length)
+                period = params.get('period', 14)
+                if array_manager.count >= period:
+                    values = talib.RSI(array_manager.close_array, timeperiod=period)
+                    return values[~np.isnan(values)]
+
             elif name == 'KDJ':
-                return self._calculate_kdj_full(period, data_length)
-            elif name == 'Bollinger':
-                return self._calculate_bollinger_full(period, data_length)
-            elif name == 'ATR':
-                return self._calculate_atr_full(period, data_length)
-            elif name == 'ADX':
-                return self._calculate_adx_full(period, data_length)
-            elif name == 'CCI':
-                return self._calculate_cci_full(period, data_length)
-            elif name == 'Williams':
-                return self._calculate_williams_full(period, data_length)
-            else:
-                print(f"❌ Unknown indicator: {name}")
-                return np.full(data_length, np.nan)
+                if array_manager.count >= 14:
+                    k, d = talib.STOCH(
+                        array_manager.high_array,
+                        array_manager.low_array,
+                        array_manager.close_array,
+                        fastk_period=9,
+                        slowk_period=3,
+                        slowd_period=3
+                    )
+                    j = 3 * k - 2 * d
+                    return {'K': k[~np.isnan(k)], 'D': d[~np.isnan(d)], 'J': j[~np.isnan(j)]}
+
+            # Add more indicators as needed...
+
+            return None
 
         except Exception as e:
             print(f"❌ Error calculating {name}: {e}")
-            return np.full(data_length, np.nan)
-
-    def _calculate_ema_full(self, period, data_length):
-        """Calculate EMA using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                closes = self.array_manager.close_array[:data_length]
-                ema_values = talib.EMA(closes, timeperiod=period)
-                return ema_values
-            else:
-                # Fallback calculation
-                return self._manual_ema(period, data_length)
-        except:
-            return self._manual_ema(period, data_length)
-
-    def _calculate_sma_full(self, period, data_length):
-        """Calculate SMA using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                closes = self.array_manager.close_array[:data_length]
-                sma_values = talib.SMA(closes, timeperiod=period)
-                return sma_values
-            else:
-                return self._manual_sma(period, data_length)
-        except:
-            return self._manual_sma(period, data_length)
-
-    def _calculate_rsi_full(self, period, data_length):
-        """Calculate RSI using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                closes = self.array_manager.close_array[:data_length]
-                rsi_values = talib.RSI(closes, timeperiod=period)
-                return rsi_values
-            else:
-                return self._manual_rsi(period, data_length)
-        except:
-            return self._manual_rsi(period, data_length)
-
-    def _calculate_macd_full(self, data_length):
-        """Calculate MACD using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                closes = self.array_manager.close_array[:data_length]
-                macd_line, macd_signal, macd_hist = talib.MACD(closes, fastperiod=12, slowperiod=26, signalperiod=9)
-                return macd_line
-            else:
-                return self._manual_macd(data_length)
-        except:
-            return self._manual_macd(data_length)
-
-    def _calculate_kdj_full(self, period, data_length):
-        """Calculate KDJ using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                highs = self.array_manager.high_array[:data_length]
-                lows = self.array_manager.low_array[:data_length]
-                closes = self.array_manager.close_array[:data_length]
-                k, d = talib.STOCH(highs, lows, closes, fastk_period=period, slowk_period=3, slowd_period=3)
-                return k
-            else:
-                return self._manual_kdj(period, data_length)
-        except:
-            return self._manual_kdj(period, data_length)
-
-    def _calculate_bollinger_full(self, period, data_length):
-        """Calculate Bollinger Bands using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                closes = self.array_manager.close_array[:data_length]
-                upper, middle, lower = talib.BBANDS(closes, timeperiod=period, nbdevup=2, nbdevdn=2)
-                return upper
-            else:
-                return self._manual_bollinger(period, data_length)
-        except:
-            return self._manual_bollinger(period, data_length)
-
-    def _calculate_atr_full(self, period, data_length):
-        """Calculate ATR using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                highs = self.array_manager.high_array[:data_length]
-                lows = self.array_manager.low_array[:data_length]
-                closes = self.array_manager.close_array[:data_length]
-                atr_values = talib.ATR(highs, lows, closes, timeperiod=period)
-                return atr_values
-            else:
-                # Use ArrayManager's built-in ATR
-                atr_values = np.full(data_length, np.nan)
-                for i in range(period - 1, data_length):
-                    atr_values[i] = self.array_manager.atr(period)
-                return atr_values
-        except:
-            return np.full(data_length, np.nan)
-
-    def _calculate_adx_full(self, period, data_length):
-        """Calculate ADX using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                highs = self.array_manager.high_array[:data_length]
-                lows = self.array_manager.low_array[:data_length]
-                closes = self.array_manager.close_array[:data_length]
-                adx_values = talib.ADX(highs, lows, closes, timeperiod=period)
-                return adx_values
-            else:
-                return np.full(data_length, np.nan)
-        except:
-            return np.full(data_length, np.nan)
-
-    def _calculate_cci_full(self, period, data_length):
-        """Calculate CCI using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                highs = self.array_manager.high_array[:data_length]
-                lows = self.array_manager.low_array[:data_length]
-                closes = self.array_manager.close_array[:data_length]
-                cci_values = talib.CCI(highs, lows, closes, timeperiod=period)
-                return cci_values
-            else:
-                return np.full(data_length, np.nan)
-        except:
-            return np.full(data_length, np.nan)
-
-    def _calculate_williams_full(self, period, data_length):
-        """Calculate Williams %R using ArrayManager"""
-        try:
-            if TALIB_AVAILABLE:
-                highs = self.array_manager.high_array[:data_length]
-                lows = self.array_manager.low_array[:data_length]
-                closes = self.array_manager.close_array[:data_length]
-                williams_values = talib.WILLR(highs, lows, closes, timeperiod=period)
-                return williams_values
-            else:
-                return np.full(data_length, np.nan)
-        except:
-            return np.full(data_length, np.nan)
-
-    # Fallback manual calculations (simplified versions)
-    def _manual_ema(self, period, data_length):
-        """Manual EMA calculation"""
-        closes = self.array_manager.close_array[:data_length]
-        ema_values = np.full(data_length, np.nan)
-
-        if data_length >= period:
-            alpha = 2.0 / (period + 1)
-            ema_values[period - 1] = np.mean(closes[:period])
-
-            for i in range(period, data_length):
-                ema_values[i] = alpha * closes[i] + (1 - alpha) * ema_values[i - 1]
-
-        return ema_values
-
-    def _manual_sma(self, period, data_length):
-        """Manual SMA calculation"""
-        closes = self.array_manager.close_array[:data_length]
-        sma_values = np.full(data_length, np.nan)
-
-        for i in range(period - 1, data_length):
-            sma_values[i] = np.mean(closes[i - period + 1:i + 1])
-
-        return sma_values
-
-    def _manual_rsi(self, period, data_length):
-        """Manual RSI calculation"""
-        closes = self.array_manager.close_array[:data_length]
-        rsi_values = np.full(data_length, np.nan)
-
-        if data_length >= period + 1:
-            deltas = np.diff(closes)
-            gains = np.where(deltas > 0, deltas, 0)
-            losses = np.where(deltas < 0, -deltas, 0)
-
-            avg_gain = np.mean(gains[:period])
-            avg_loss = np.mean(losses[:period])
-
-            if avg_loss != 0:
-                rs = avg_gain / avg_loss
-                rsi_values[period] = 100 - (100 / (1 + rs))
-
-            for i in range(period + 1, data_length):
-                avg_gain = ((avg_gain * (period - 1)) + gains[i - 1]) / period
-                avg_loss = ((avg_loss * (period - 1)) + losses[i - 1]) / period
-
-                if avg_loss != 0:
-                    rs = avg_gain / avg_loss
-                    rsi_values[i] = 100 - (100 / (1 + rs))
-
-        return rsi_values
-
-    def _manual_macd(self, data_length):
-        """Manual MACD calculation"""
-        closes = self.array_manager.close_array[:data_length]
-
-        ema12 = np.full(data_length, np.nan)
-        ema26 = np.full(data_length, np.nan)
-
-        alpha12 = 2.0 / 13
-        alpha26 = 2.0 / 27
-
-        if data_length >= 12:
-            ema12[11] = np.mean(closes[:12])
-            for i in range(12, data_length):
-                ema12[i] = alpha12 * closes[i] + (1 - alpha12) * ema12[i - 1]
-
-        if data_length >= 26:
-            ema26[25] = np.mean(closes[:26])
-            for i in range(26, data_length):
-                ema26[i] = alpha26 * closes[i] + (1 - alpha26) * ema26[i - 1]
-
-        return ema12 - ema26
-
-    def _manual_kdj(self, period, data_length):
-        """Manual KDJ calculation"""
-        highs = self.array_manager.high_array[:data_length]
-        lows = self.array_manager.low_array[:data_length]
-        closes = self.array_manager.close_array[:data_length]
-
-        k_values = np.full(data_length, np.nan)
-
-        for i in range(period - 1, data_length):
-            highest_high = np.max(highs[i - period + 1:i + 1])
-            lowest_low = np.min(lows[i - period + 1:i + 1])
-
-            if highest_high != lowest_low:
-                k_values[i] = 100 * (closes[i] - lowest_low) / (highest_high - lowest_low)
-            else:
-                k_values[i] = 50
-
-        return k_values
-
-    def _manual_bollinger(self, period, data_length):
-        """Manual Bollinger Bands calculation"""
-        closes = self.array_manager.close_array[:data_length]
-        upper_band = np.full(data_length, np.nan)
-
-        for i in range(period - 1, data_length):
-            window = closes[i - period + 1:i + 1]
-            sma = np.mean(window)
-            std = np.std(window)
-            upper_band[i] = sma + (2 * std)
-
-        return upper_band
+            return None
 
 
 class HowtraderDataLoader(QThread):
@@ -1311,34 +1104,46 @@ class SMCFeaturePanel(QWidget):
         self.get_active_smc_features()
 
     def get_active_smc_features(self):
+        """Get active SMC features with better error handling"""
         active_features = []
 
         if not SMC_AVAILABLE:
             return active_features
 
-        for row in range(self.smc_table.rowCount()):
-            feature_combo = self.smc_table.cellWidget(row, 0)
-            param1_widget = self.smc_table.cellWidget(row, 1)
-            param2_widget = self.smc_table.cellWidget(row, 2)
-            show_check = self.smc_table.cellWidget(row, 3)
+        try:
+            for row in range(self.smc_table.rowCount()):
+                feature_combo = self.smc_table.cellWidget(row, 0)
+                param1_widget = self.smc_table.cellWidget(row, 1)
+                param2_widget = self.smc_table.cellWidget(row, 2)
+                show_check = self.smc_table.cellWidget(row, 3)
 
-            if show_check.isChecked():
-                params = {}
+                # ✅ Fix: Check if widgets exist before using them
+                if not all([feature_combo, show_check]):
+                    print(f"⚠️ Missing widgets in row {row}")
+                    continue
 
-                if param1_widget and hasattr(param1_widget, 'value'):
-                    params['param1'] = param1_widget.value()
+                if show_check.isChecked():
+                    params = {}
 
-                if param2_widget and hasattr(param2_widget, 'value'):
-                    params['param2'] = param2_widget.value()
+                    if param1_widget and hasattr(param1_widget, 'value'):
+                        params['param1'] = param1_widget.value()
 
-                active_features.append({
-                    'name': feature_combo.currentText(),
-                    'params': params
-                })
+                    if param2_widget and hasattr(param2_widget, 'value'):
+                        params['param2'] = param2_widget.value()
 
-                self.smc_feature_changed.emit(feature_combo.currentText(), params)
+                    active_features.append({
+                        'name': feature_combo.currentText(),
+                        'params': params
+                    })
 
-        return active_features
+                    # ✅ Emit signal for each active feature
+                    self.smc_feature_changed.emit(feature_combo.currentText(), params)
+
+            return active_features
+
+        except Exception as e:
+            print(f"❌ Error in get_active_smc_features: {e}")
+            return active_features
 
 
 # ==================== ENHANCED MAIN CHART CLASS ====================
@@ -1466,16 +1271,11 @@ class AdvancedHowtraderChart(QWidget):
         # 🔥 ENHANCED: More timeframe options
         timeframe_options = [
             ("1 Minute", Interval.MINUTE),
-            ("3 Minutes", Interval.MINUTE_3),
             ("5 Minutes", Interval.MINUTE_5),
             ("15 Minutes", Interval.MINUTE_15),
             ("30 Minutes", Interval.MINUTE_30),
             ("1 Hour", Interval.HOUR),
-            ("2 Hours", Interval.HOUR_2),
             ("4 Hours", Interval.HOUR_4),
-            ("6 Hours", Interval.HOUR_6),
-            ("8 Hours", Interval.HOUR_8),
-            ("12 Hours", Interval.HOUR_12),
             ("1 Day", Interval.DAILY),
             ("1 Week", Interval.WEEKLY),
             ("1 Month", Interval.MONTH)
@@ -1608,8 +1408,13 @@ class AdvancedHowtraderChart(QWidget):
 
         # SMC features tab (UNCHANGED)
         self.smc_panel = SMCFeaturePanel()
-        self.smc_panel.smc_feature_changed.connect(self.update_smc_features)
+        self.smc_panel.smc_feature_changed.connect(self.on_smc_feature_changed)
         tab_widget.addTab(self.smc_panel, "💡 SMC")
+
+        # ✅ Add debug logging
+        print("🔗 Signal connections established:")
+        print(f"   - Indicator panel connected: {self.indicator_panel.indicator_changed}")
+        print(f"   - SMC panel connected: {self.smc_panel.smc_feature_changed}")
 
         left_layout.addWidget(tab_widget)
 
@@ -1632,6 +1437,33 @@ class AdvancedHowtraderChart(QWidget):
         main_layout.addWidget(right_panel, 1)
 
         self.setLayout(main_layout)
+
+    def on_indicator_changed(self, indicator_name, params):
+        """🔧 FIXED: Handle indicator changes with debug logging"""
+        print(f"🎯 Indicator changed: {indicator_name} with params: {params}")
+
+        try:
+            # Update specific indicator
+            self.update_indicators(indicator_name, params)
+            print(f"✅ Successfully processed indicator change for {indicator_name}")
+
+        except Exception as e:
+            print(f"❌ Error processing indicator change for {indicator_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def on_smc_feature_changed(self, feature_name, params):
+        """Handle SMC feature changes with debugging"""
+        try:
+            print(f"🎯 SMC Feature changed: {feature_name} with params: {params}")
+            self.update_smc_features(feature_name, params)
+
+            # Force chart refresh to show new SMC features
+            if hasattr(self, 'price_widget'):
+                print(f"✅ Refreshing chart for SMC feature: {feature_name}")
+
+        except Exception as e:
+            print(f"❌ Error handling SMC feature change: {e}")
 
     def create_professional_charts(self, layout):
         """Keep original chart layout (UNCHANGED)"""
@@ -1719,16 +1551,11 @@ class AdvancedHowtraderChart(QWidget):
                 self.timeframe_combo.clear()
                 supported_timeframes = [
                     (Interval.MINUTE, "1m"),
-                    (Interval.MINUTE_3, "3m"),
                     (Interval.MINUTE_5, "5m"),
                     (Interval.MINUTE_15, "15m"),
                     (Interval.MINUTE_30, "30m"),
                     (Interval.HOUR, "1h"),
-                    (Interval.HOUR_2, "2h"),
                     (Interval.HOUR_4, "4h"),
-                    (Interval.HOUR_6, "6h"),
-                    (Interval.HOUR_8, "8h"),
-                    (Interval.HOUR_12, "12h"),
                     (Interval.DAILY, "1d"),
                     (Interval.WEEKLY, "1w"),
                     (Interval.MONTH, "1M")
@@ -1874,7 +1701,7 @@ class AdvancedHowtraderChart(QWidget):
             self.load_btn.setEnabled(True)
 
     def update_indicators(self, indicator_name, params):
-        """🔥 ENHANCED: Update indicators using HowtraderIndicatorCalculator"""
+        """🔧 FIXED: Update indicators with proper ArrayManager initialization"""
         if not self.bars:
             return
 
@@ -1882,8 +1709,21 @@ class AdvancedHowtraderChart(QWidget):
             data_len = len(self.bars)
             print(f"🔄 Calculating {indicator_name} for {data_len} bars...")
 
-            # 🔥 ENHANCED: Use HowtraderIndicatorCalculator
-            indicator_data = self.indicator_calculator.calculate_indicator(indicator_name, params, data_len)
+            # ✅ Initialize ArrayManager properly BEFORE calculating
+            if not hasattr(self, 'array_manager') or not self.array_manager.inited:
+                print(f"🔧 Initializing ArrayManager with {data_len} bars...")
+                self.array_manager = ArrayManager(size=max(data_len + 100, 500))
+
+                # Add all bars to ArrayManager
+                for bar in self.bars:
+                    self.array_manager.update_bar(bar)
+
+                print(f"✅ ArrayManager initialized with {self.array_manager.count} bars")
+
+            # ✅ Now calculate indicator with initialized ArrayManager
+            indicator_data = self.indicator_calculator.calculate_indicator(
+                indicator_name, params, data_len
+            )
 
             if indicator_data is not None:
                 self.display_indicator(indicator_name, indicator_data, params)
@@ -1893,52 +1733,98 @@ class AdvancedHowtraderChart(QWidget):
 
         except Exception as e:
             print(f"❌ Error updating indicator {indicator_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
 
     def display_indicator(self, name, data, params):
-        """Keep original indicator display logic (UNCHANGED)"""
-        oscillator_indicators = ['RSI', 'KDJ', 'MACD', 'CCI', 'Williams', 'ADX']
+        """🔧 ENHANCED: Display indicator with better validation"""
+        try:
+            if data is None or len(data) == 0:
+                print(f"⚠️ No data to display for {name}")
+                return
 
-        if name in oscillator_indicators:
-            if name in self.oscillator_indicator_items:
-                self.oscillator_widget.removeItem(self.oscillator_indicator_items[name])
+            oscillator_indicators = ['RSI', 'KDJ', 'MACD', 'CCI', 'Williams', 'ADX']
 
-            # 🔥 ENHANCED: More color options
-            colors = {
-                'RSI': '#7c3aed',
-                'KDJ': '#ea580c',
-                'MACD': '#059669',
-                'CCI': '#dc2626',
-                'Williams': '#8b5cf6',
-                'ADX': '#f59e0b'
-            }
-            color = colors.get(name, '#1e293b')
+            if name in oscillator_indicators:
+                # Remove existing indicator
+                if name in self.oscillator_indicator_items:
+                    self.oscillator_widget.removeItem(self.oscillator_indicator_items[name])
 
-            indicator_item = IndicatorItem(data, color, width=2)
-            self.oscillator_widget.addItem(indicator_item)
-            self.oscillator_indicator_items[name] = indicator_item
+                colors = {
+                    'RSI': '#7c3aed',
+                    'KDJ': '#ea580c',
+                    'MACD': '#059669',
+                    'CCI': '#dc2626',
+                    'Williams': '#8b5cf6',
+                    'ADX': '#f59e0b'
+                }
+                color = colors.get(name, '#1e293b')
 
-        else:
-            if name in self.price_indicator_items:
-                self.price_widget.removeItem(self.price_indicator_items[name])
+                # ✅ Handle different data types
+                if isinstance(data, dict):  # For KDJ
+                    for key, values in data.items():
+                        if len(values) > 0:
+                            indicator_item = IndicatorItem(values, color, width=2)
+                            self.oscillator_widget.addItem(indicator_item)
+                            self.oscillator_indicator_items[f"{name}_{key}"] = indicator_item
+                            print(f"✅ Added {name}_{key} to oscillator widget")
+                else:
+                    indicator_item = IndicatorItem(data, color, width=2)
+                    self.oscillator_widget.addItem(indicator_item)
+                    self.oscillator_indicator_items[name] = indicator_item
+                    print(f"✅ Added {name} to oscillator widget")
 
-            colors = {
-                'EMA': '#2563eb',
-                'SMA': '#dc2626',
-                'Bollinger': '#8b5cf6',
-                'ATR': '#f59e0b'
-            }
+            else:  # Price indicators
+                if name in self.price_indicator_items:
+                    self.price_widget.removeItem(self.price_indicator_items[name])
 
-            color = colors.get(name, '#1e293b')
+                colors = {
+                    'EMA': '#2563eb',
+                    'SMA': '#dc2626',
+                    'Bollinger': '#8b5cf6',
+                    'ATR': '#f59e0b'
+                }
+                color = colors.get(name, '#1e293b')
 
-            indicator_item = IndicatorItem(data, color, width=2)
-            self.price_widget.addItem(indicator_item)
-            self.price_indicator_items[name] = indicator_item
+                indicator_item = IndicatorItem(data, color, width=2)
+                self.price_widget.addItem(indicator_item)
+                self.price_indicator_items[name] = indicator_item
+                print(f"✅ Added {name} to price widget")
+
+        except Exception as e:
+            print(f"❌ Error displaying {name}: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_all_indicators(self):
-        """Keep original update logic (UNCHANGED)"""
-        active_indicators = self.indicator_panel.get_active_indicators()
-        for indicator in active_indicators:
-            self.update_indicators(indicator['name'], indicator['params'])
+        """🔧 FIXED: Update all active indicators with debug logging"""
+        try:
+            print("🔄 Starting to update all indicators...")
+
+            if not hasattr(self, 'indicator_panel'):
+                print("❌ No indicator panel found")
+                return
+
+            # Get active indicators from panel
+            active_indicators = self.indicator_panel.get_active_indicators()
+            print(f"📊 Found {len(active_indicators)} active indicators: {[ind['name'] for ind in active_indicators]}")
+
+            for indicator in active_indicators:
+                name = indicator['name']
+                params = indicator['params']
+                print(f"🎯 Processing indicator: {name} with params: {params}")
+
+                try:
+                    self.update_indicators(name, params)
+                    print(f"✅ Successfully updated {name}")
+                except Exception as e:
+                    print(f"❌ Failed to update {name}: {e}")
+
+        except Exception as e:
+            print(f"❌ Error in update_all_indicators: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ==================== KEEP ALL ORIGINAL METHODS ====================
 
@@ -1981,47 +1867,56 @@ class AdvancedHowtraderChart(QWidget):
             print(f"❌ Error updating OHLC data: {e}")
 
     def _update_trade_markers(self):
-        """Keep original trade marker update method (UNCHANGED)"""
+        """Update trade markers with timeframe awareness"""
         try:
             if not hasattr(self, 'backtest_trades') or not self.backtest_trades:
                 print("⚠️ No backtest trades available")
                 return
 
-            if not self.bars:
-                print("⚠️ No bars available for trade mapping")
+            # Use current chart's timestamps (after timeframe conversion)
+            if not self.timestamps:
+                print("⚠️ No timestamps available for mapping")
                 return
-
-            start_time = self.bars[0].datetime
-            end_time = self.bars[-1].datetime
 
             self.trade_markers = []
 
             for trade in self.backtest_trades:
-                trade_time = trade.datetime
+                trade_timestamp = trade.datetime.timestamp()
 
-                # Check if trade is within current timeframe range
-                if start_time <= trade_time <= end_time:
-                    # Find closest bar for this trade
-                    closest_bar_idx = self._find_closest_bar_index(trade_time)
-                    if closest_bar_idx is not None:
-                        # Determine offset type
-                        offset_str = str(trade.offset).upper()
+                # Find closest bar in CONVERTED timeframe
+                closest_index = self._find_closest_timestamp_index(trade_timestamp)
 
-                        marker = {
-                            'timestamp': self.bars[closest_bar_idx].datetime.timestamp(),
-                            'price': float(trade.price),
-                            'direction': 'long' if trade.direction.value == 1 else 'short',
-                            'offset': offset_str,  # 'OPEN' or 'CLOSE'
-                            'volume': float(trade.volume),
-                            'datetime': trade.datetime
-                        }
-                        self.trade_markers.append(marker)
+                if closest_index is not None:
+                    # Get price from the closest bar for validation
+                    if hasattr(self, 'ohlc_data') and closest_index < len(self.ohlc_data):
+                        bar_data = self.ohlc_data[closest_index]
+                        # Use actual bar price range for validation
+                        bar_low = float(bar_data[2])  # Low
+                        bar_high = float(bar_data[1])  # High
+                        trade_price = float(trade.price)
+
+                        # Validate trade price is within bar range
+                        if not (bar_low <= trade_price <= bar_high):
+                            print(f"⚠️ Trade price {trade_price} outside bar range [{bar_low}, {bar_high}]")
+
+                    marker = {
+                        'timestamp': self.timestamps[closest_index],  # Use chart timestamp
+                        'index': closest_index,  # Store chart index directly
+                        'price': float(trade.price),
+                        'direction': 'long' if trade.direction.value == 1 else 'short',
+                        'offset': str(trade.offset).upper(),
+                        'volume': float(trade.volume),
+                        'datetime': trade.datetime,
+                        'original_timestamp': trade_timestamp
+                    }
+                    self.trade_markers.append(marker)
 
             print(f"✅ Trade markers updated: {len(self.trade_markers)} trades")
 
-            # Debug: Print first few markers
-            for i, marker in enumerate(self.trade_markers[:5]):
-                print(f"   Trade {i + 1}: {marker['offset']} {marker['direction']} at {marker['price']}")
+            # Debug first few markers
+            for i, marker in enumerate(self.trade_markers[:3]):
+                print(
+                    f"   Trade {i + 1}: {marker['offset']} {marker['direction']} at {marker['price']} (index: {marker['index']})")
 
         except Exception as e:
             print(f"❌ Error updating trade markers: {e}")
@@ -2068,30 +1963,109 @@ class AdvancedHowtraderChart(QWidget):
             print(f"❌ Error clearing chart: {e}")
 
     def prepare_smc_dataframe(self):
-        """Keep original SMC DataFrame preparation (UNCHANGED)"""
-        if not self.bars:
-            return
-
+        """Prepare DataFrame for SMC calculations with proper column mapping"""
         try:
-            # Create DataFrame with proper column names for SMC
-            data = []
+            # Method 1: Use existing df_ohlc
+            if hasattr(self, 'df_ohlc') and self.df_ohlc is not None and len(self.df_ohlc) > 0:
+                df = self.df_ohlc.copy()
+                print(f"📊 Using existing df_ohlc: {len(df)} bars")
 
-            for bar in self.bars:
-                data.append({
-                    'open': bar.open_price,
-                    'high': bar.high_price,
-                    'low': bar.low_price,
-                    'close': bar.close_price,
-                    'volume': bar.volume
-                })
+            # Method 2: Create from ohlc_data (FIXED)
+            elif hasattr(self, 'ohlc_data') and self.ohlc_data:
+                print(f"🔍 ohlc_data structure: {type(self.ohlc_data)}")
+                print(
+                    f"🔍 ohlc_data keys: {list(self.ohlc_data.keys()) if isinstance(self.ohlc_data, dict) else 'Not a dict'}")
 
-            self.df_ohlc = pd.DataFrame(data)
-            self.df_ohlc.index = self.timestamps
-            print(f"✅ SMC DataFrame prepared with {len(self.df_ohlc)} rows")
+                # Check if ohlc_data is structured as arrays
+                if isinstance(self.ohlc_data, dict) and 'timestamp' in self.ohlc_data:
+                    timestamps = self.ohlc_data['timestamp']
+                    opens = self.ohlc_data['open']
+                    highs = self.ohlc_data['high']
+                    lows = self.ohlc_data['low']
+                    closes = self.ohlc_data['close']
+                    volumes = self.ohlc_data.get('volume', [0] * len(timestamps))
+
+                    df_data = []
+                    for i in range(len(timestamps)):
+                        df_data.append({
+                            'timestamp': pd.to_datetime(timestamps[i], unit='s'),
+                            'open_price': opens[i],
+                            'high_price': highs[i],
+                            'low_price': lows[i],
+                            'close_price': closes[i],
+                            'volume': volumes[i]
+                        })
+
+                    if df_data:
+                        df = pd.DataFrame(df_data)
+                        df.set_index('timestamp', inplace=True)
+                        print(f"📊 Created dataframe from ohlc_data arrays: {len(df)} bars")
+                    else:
+                        print("❌ No valid ohlc_data arrays")
+                        return None
+                else:
+                    print("❌ ohlc_data not in expected array format")
+                    return None
+
+            # Method 3: Create from bars
+            elif hasattr(self, 'bars') and self.bars:
+                df_data = []
+                for bar in self.bars:
+                    df_data.append({
+                        'timestamp': bar.datetime,
+                        'open_price': bar.open_price,
+                        'high_price': bar.high_price,
+                        'low_price': bar.low_price,
+                        'close_price': bar.close_price,
+                        'volume': bar.volume
+                    })
+
+                if df_data:
+                    df = pd.DataFrame(df_data)
+                    df.set_index('timestamp', inplace=True)
+                    print(f"📊 Created dataframe from bars: {len(df)} bars")
+                else:
+                    print("❌ No bars available")
+                    return None
+            else:
+                print("❌ No data available for SMC dataframe")
+                return None
+
+            # ✅ Apply SMC column mapping (as per your inputvalidator)
+            rename_map = {
+                "open_price": "open",
+                "high_price": "high",
+                "low_price": "low",
+                "close_price": "close",
+                "volume": "volume",
+            }
+
+            # Rename columns according to SMC requirements
+            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+            # Convert all column names to lowercase for consistency
+            df.columns = [c.lower() for c in df.columns]
+
+            # Verify required columns exist
+            required_columns = ['open', 'high', 'low', 'close']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+
+            if missing_columns:
+                print(f"❌ Missing required columns for SMC: {missing_columns}")
+                print(f"📋 Available columns: {list(df.columns)}")
+                return None
+
+            print(f"✅ SMC dataframe prepared with columns: {list(df.columns)}")
+            print(f"📊 Data shape: {df.shape}")
+            print(f"📅 Date range: {df.index[0]} to {df.index[-1]}")
+
+            return df
 
         except Exception as e:
-            print(f"❌ Error preparing SMC DataFrame: {e}")
-            self.df_ohlc = None
+            print(f"❌ Error preparing SMC dataframe: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def on_data_error(self, error_msg):
         """Keep original error handling (UNCHANGED)"""
@@ -2217,9 +2191,8 @@ class AdvancedHowtraderChart(QWidget):
             )
 
             # Update indicators and SMC features if not in backtest mode
-            if not (hasattr(self, 'backtest_mode') and self.backtest_mode):
-                self.update_all_indicators()
-                self.update_all_smc_features()
+            self.update_all_indicators()
+            self.update_all_smc_features()
 
             # ADD TRADE MARKERS
             print("🎯 About to add trade markers...")
@@ -2273,40 +2246,61 @@ class AdvancedHowtraderChart(QWidget):
             traceback.print_exc()
 
     def _convert_markers_to_indices(self):
-        """Keep original method (UNCHANGED)"""
-        try:
-            if not self.bars or not self.trade_markers:
-                return []
-
-            marker_indices = []
-
-            for marker in self.trade_markers:
-                # Find closest bar index for this trade timestamp
-                marker_time = marker['datetime']  # Use datetime object
-
-                closest_index = None
-                min_diff = float('inf')
-
-                for i, bar in enumerate(self.bars):
-                    diff = abs((bar.datetime - marker_time).total_seconds())
-                    if diff < min_diff:
-                        min_diff = diff
-                        closest_index = i
-
-                if closest_index is not None:
-                    marker_indices.append({
-                        'index': closest_index,
-                        'price': marker['price'],
-                        'offset': marker['offset'],
-                        'direction': marker['direction']
-                    })
-
-            print(f"✅ Converted {len(marker_indices)} markers to chart indices")
-            return marker_indices
-
-        except Exception as e:
-            print(f"❌ Error converting markers to indices: {e}")
+        """Convert trade markers from timestamps to chart indices"""
+        if not self.trade_markers or not self.timestamps:
             return []
+
+        marker_indices = []
+
+        for marker in self.trade_markers:
+            trade_timestamp = marker['timestamp']
+
+            # Method 1: Binary search for exact/closest timestamp
+            closest_index = self._find_closest_timestamp_index(trade_timestamp)
+
+            if closest_index is not None:
+                marker_indices.append({
+                    'index': closest_index,
+                    'price': marker['price'],
+                    'direction': marker['direction'],
+                    'offset': marker['offset'],
+                    'volume': marker['volume'],
+                    'original_timestamp': trade_timestamp
+                })
+
+        print(f"✅ Converted {len(marker_indices)} markers to chart indices")
+        return marker_indices
+
+    def _find_closest_timestamp_index(self, target_timestamp):
+        """Find closest timestamp index using binary search"""
+        if not self.timestamps:
+            return None
+
+        # Convert target to same format as timestamps
+        target = float(target_timestamp)
+
+        # Binary search for closest match
+        left, right = 0, len(self.timestamps) - 1
+        closest_index = 0
+        min_diff = abs(self.timestamps[0] - target)
+
+        while left <= right:
+            mid = (left + right) // 2
+            current_timestamp = float(self.timestamps[mid])
+            diff = abs(current_timestamp - target)
+
+            if diff < min_diff:
+                min_diff = diff
+                closest_index = mid
+
+            if current_timestamp < target:
+                left = mid + 1
+            elif current_timestamp > target:
+                right = mid - 1
+            else:
+                return mid  # Exact match
+
+        return closest_index
 
     def _group_trades_into_pairs(self, marker_indices):
         """Keep original method (UNCHANGED)"""
@@ -2334,87 +2328,114 @@ class AdvancedHowtraderChart(QWidget):
             return []
 
     def _add_trade_marker_pair(self, pair):
-        """Keep original method (UNCHANGED)"""
+        """Add entry/exit marker pair with better symbols"""
         try:
-            entry = pair['entry']
-            exit_trade = pair['exit']
-            direction = pair['direction']
+            entry_marker = pair['entry']
+            exit_marker = pair.get('exit')
 
-            # Colors based on direction
-            if direction == 'long':
-                entry_color = 'green'
-                exit_color = 'red'
-                entry_symbol = 't'  # Triangle up
-                exit_symbol = 't1'  # Triangle down
-            else:
-                entry_color = 'red'
-                exit_color = 'green'
-                entry_symbol = 't1'  # Triangle down
-                exit_symbol = 't'  # Triangle up
+            entry_x = entry_marker['index']
+            entry_y = entry_marker['price']
 
-            # Add entry marker
+            # Better symbol choices for trading
+            if entry_marker['direction'] == 'long':
+                entry_color = '#22c55e'
+                entry_symbol = 't'  # Triangle up for long entry
+                exit_color = '#ff4444'
+                exit_symbol = 't1'  # Triangle down for long exit
+            else:  # short
+                entry_color = '#ff4444'
+                entry_symbol = 't1'  # Triangle down for short entry
+                exit_color = '#22c55e'
+                exit_symbol = 't'  # Triangle up for short exit
+
+            # Entry marker
             entry_scatter = pg.ScatterPlotItem(
-                [entry['index']],
-                [entry['price']],
+                pos=[(entry_x, entry_y)],
+                symbol=entry_symbol,
                 size=15,
-                pen=pg.mkPen(entry_color, width=2),
                 brush=pg.mkBrush(entry_color),
-                symbol=entry_symbol
+                pen=pg.mkPen('white', width=2)
             )
             self.price_widget.addItem(entry_scatter)
 
-            # Add exit marker
-            exit_scatter = pg.ScatterPlotItem(
-                [exit_trade['index']],
-                [exit_trade['price']],
-                size=15,
-                pen=pg.mkPen(exit_color, width=2),
-                brush=pg.mkBrush(exit_color),
-                symbol=exit_symbol
+            # Add entry label (direction only)
+            entry_text = pg.TextItem(
+                entry_marker['direction'].upper(),
+                color=entry_color,
+                anchor=(0.5, 1.2)
             )
-            self.price_widget.addItem(exit_scatter)
+            entry_text.setPos(entry_x, entry_y)
+            self.price_widget.addItem(entry_text)
 
-            # Add connecting line
-            line_color = 'green' if exit_trade['price'] > entry['price'] else 'red'
-            trade_line = pg.PlotDataItem(
-                [entry['index'], exit_trade['index']],
-                [entry['price'], exit_trade['price']],
-                pen=pg.mkPen(line_color, width=1, style=pg.QtCore.Qt.DashLine)
-            )
-            self.price_widget.addItem(trade_line)
+            if exit_marker:
+                exit_x = exit_marker['index']
+                exit_y = exit_marker['price']
 
-            # Add profit/loss text
-            pnl = exit_trade['price'] - entry['price']
-            if direction == 'short':
-                pnl = -pnl
+                # Exit marker
+                exit_scatter = pg.ScatterPlotItem(
+                    pos=[(exit_x, exit_y)],
+                    symbol=exit_symbol,
+                    size=15,
+                    brush=pg.mkBrush(exit_color),
+                    pen=pg.mkPen('white', width=2)
+                )
+                self.price_widget.addItem(exit_scatter)
 
-            pnl_text = f"P/L: {pnl:.2f}"
-            text_item = pg.TextItem(
-                pnl_text,
-                color=line_color,
-                anchor=(0.5, 1.5)
-            )
-            text_item.setPos(exit_trade['index'], exit_trade['price'])
-            self.price_widget.addItem(text_item)
+                # Add exit label with P&L only
+                pnl = exit_y - entry_y
+                if entry_marker['direction'] == 'short':
+                    pnl = -pnl
+
+                exit_text = pg.TextItem(
+                    f"P&L: {pnl:.2f}",
+                    color=exit_color,
+                    anchor=(0.5, 1.2)
+                )
+                exit_text.setPos(exit_x, exit_y)
+                self.price_widget.addItem(exit_text)
+
+                # Connection line
+                line_color = '#22c55e' if pnl > 0 else '#ff4444'
+                line = pg.PlotCurveItem(
+                    x=[entry_x, exit_x],
+                    y=[entry_y, exit_y],
+                    pen=pg.mkPen(line_color, width=2, style=pg.QtCore.Qt.DashLine)
+                )
+                self.price_widget.addItem(line)
 
         except Exception as e:
-            print(f"❌ Error adding trade marker pair: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ==================== KEEP ALL ORIGINAL SMC METHODS ====================
 
-    def update_smc_features(self, feature_name, params):
-        """Keep original SMC update method (UNCHANGED)"""
-        if not SMC_AVAILABLE or self.df_ohlc is None:
-            return
-
+    def update_smc_features(self, name, params):
+        """Update SMC features with improved data handling"""
         try:
-            print(f"🔄 Calculating SMC feature: {feature_name}")
-            smc_data = self.calculate_smc_feature(feature_name, params)
-            if smc_data is not None:
-                self.display_smc_feature_professional(feature_name, smc_data, params)
-                print(f"✅ Updated SMC {feature_name}")
+            print(f"🎯 Updating SMC feature: {name} with params: {params}")
+
+            if not SMC_AVAILABLE:
+                print("❌ SMC library not available")
+                return
+
+            # Calculate SMC feature with proper data validation
+            smc_data = self.calculate_smc_feature(name, params)
+
+            if smc_data is not None and len(smc_data) > 0:
+                print(f"✅ SMC feature calculated successfully")
+                print(
+                    f"📊 Result columns: {list(smc_data.columns) if hasattr(smc_data, 'columns') else 'Not a DataFrame'}")
+
+                # Display the feature on chart
+                self.display_smc_feature_professional(name, smc_data, params)
+                print(f"🎨 SMC feature {name} displayed on chart")
+            else:
+                print(f"⚠️ No SMC data calculated for {name}")
+
         except Exception as e:
-            print(f"❌ Error updating SMC {feature_name}: {e}")
+            print(f"❌ Error updating SMC feature {name}: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_all_smc_features(self):
         """Keep original method (UNCHANGED)"""
@@ -2423,39 +2444,79 @@ class AdvancedHowtraderChart(QWidget):
             for feature in active_features:
                 self.update_smc_features(feature['name'], feature['params'])
 
-    def calculate_smc_feature(self, name, params):
-        """Keep original SMC calculation method (UNCHANGED)"""
-        if not SMC_AVAILABLE or self.df_ohlc is None:
-            return None
-
+    def calculate_smc_feature(self, feature_name, params):
+        """Calculate SMC feature with proper data validation"""
         try:
-            if name == 'FVG':
-                return smc.fvg(self.df_ohlc, join_consecutive=True)
-            elif name == 'SwingHL':
-                swing_length = params.get('param1', 50)
-                return smc.swing_highs_lows(self.df_ohlc, swing_length=swing_length)
-            elif name == 'BOS_CHOCH':
-                swing_data = smc.swing_highs_lows(self.df_ohlc, swing_length=50)
-                return smc.bos_choch(self.df_ohlc, swing_data)
-            elif name == 'OrderBlocks':
-                swing_data = smc.swing_highs_lows(self.df_ohlc, swing_length=50)
-                return smc.ob(self.df_ohlc, swing_data)
-            elif name == 'Liquidity':
-                swing_data = smc.swing_highs_lows(self.df_ohlc, swing_length=50)
-                range_percent = params.get('param1', 1) / 100.0
-                return smc.liquidity(self.df_ohlc, swing_data, range_percent=range_percent)
-            elif name == 'PrevHL':
-                return smc.previous_high_low(self.df_ohlc, time_frame="1D")
-            elif name == 'Sessions':
-                return smc.sessions(self.df_ohlc, session="London")
-            elif name == 'Retracements':
-                swing_data = smc.swing_highs_lows(self.df_ohlc, swing_length=50)
-                return smc.retracements(self.df_ohlc, swing_data)
-        except Exception as e:
-            print(f"❌ SMC calculation error for {name}: {e}")
-            return None
+            if not SMC_AVAILABLE:
+                print("❌ SMC library not available")
+                return None
 
-        return None
+            # Prepare data with proper mapping
+            df = self.prepare_smc_dataframe()
+            if df is None or len(df) < 50:
+                print(f"❌ Insufficient data for SMC: {len(df) if df is not None else 0} bars")
+                return None
+
+            print(f"🎯 Calculating {feature_name} with {len(df)} bars")
+            print(f"📋 DataFrame columns: {list(df.columns)}")
+            print(f"📊 Sample data:")
+            print(df.head(3).to_string())
+
+            # Calculate based on feature type
+            if feature_name == "FVG":
+                result = smc.fvg(df)
+                print(f"✅ FVG calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "SwingHL":
+                length = params.get('param1', 50)
+                print(f"🔄 Calculating SwingHL with length: {length}")
+                result = smc.swing_highs_lows(df, swing_length=length)
+                print(f"✅ SwingHL calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "BOS_CHOCH":
+                print("🔄 Calculating BOS_CHOCH...")
+                # First calculate swing highs/lows
+                swing_data = smc.swing_highs_lows(df)
+                result = smc.bos_choch(df, swing_highs_lows=swing_data)
+                print(f"✅ BOS_CHOCH calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "OrderBlocks":
+                print("🔄 Calculating OrderBlocks...")
+                result = smc.ob(df)
+                print(f"✅ OrderBlocks calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "Liquidity":
+                length = params.get('param1', 1)
+                print(f"🔄 Calculating Liquidity with length: {length}")
+                result = smc.liquidity(df, length=length)
+                print(f"✅ Liquidity calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "PrevHL":
+                print("🔄 Calculating PrevHL...")
+                result = smc.previous_high_low(df)
+                print(f"✅ PrevHL calculated: {len(result)} results")
+                return result
+
+            elif feature_name == "Sessions":
+                print("🔄 Calculating Sessions...")
+                result = smc.sessions(df)
+                print(f"✅ Sessions calculated: {len(result)} results")
+                return result
+
+            else:
+                print(f"❌ Unknown SMC feature: {feature_name}")
+                return None
+
+        except Exception as e:
+            print(f"❌ Error calculating SMC feature {feature_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def display_smc_feature_professional(self, name, data, params):
         """Keep original SMC display method (UNCHANGED)"""
