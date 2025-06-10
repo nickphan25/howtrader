@@ -3,7 +3,7 @@
 """
 from howtrader.trader.object import Interval
 from datetime import datetime
-from examples.strategies.atr_rsi_strategy import  AtrRsiStrategy  # 要导入你回测的策略，你自己开发的。
+from examples.strategies.atr_rsi_15min_strategy import  AtrRsi15MinStrategy  # 要导入你回测的策略，你自己开发的。
 import pandas as pd
 import sys
 
@@ -154,8 +154,8 @@ def run_backtest_with_widget():
     engine.set_parameters(
         vt_symbol="BTCUSDT.BINANCE",
         interval=Interval.MINUTE,
-        start=datetime(2024, 1, 1),
-        end=datetime(2024, 2, 1),
+        start=datetime(2025, 5, 1),
+        end=datetime(2025, 5, 15),
         rate=4 / 10000,
         slippage=0,
         size=1,
@@ -163,7 +163,7 @@ def run_backtest_with_widget():
         capital=100000,
     )
 
-    engine.add_strategy(AtrRsiStrategy, {})
+    engine.add_strategy(AtrRsi15MinStrategy, {})
     
     print("📊 Loading data...")
     engine.load_data()
@@ -194,25 +194,26 @@ if __name__ == "__main__":
     try:
         # Ensure Qt application is initialized first
         app = ensure_qt_application()
-        
+
         print("🎯 Starting Backtesting with Advanced Trading Widget...")
         engine, widget = run_backtest_with_widget()
-        
+
         if widget is not None:
             print("✅ Backtesting completed successfully!")
             print("🎯 Advanced Trading Widget is now running!")
-            
-            # Run the Qt event loop
+
+            # 🔥 THIS IS THE MISSING PART - Start the Qt event loop
             print("🔄 Starting Qt event loop...")
-            sys.exit(app.exec())
+            app.exec()  # This keeps the application running and shows the widget
         else:
             print("❌ Widget creation failed!")
-            
+
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
         sys.exit(0)
     except Exception as e:
         print(f"❌ Error occurred: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
