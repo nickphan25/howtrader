@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QSplitter,
     QDateEdit, QTabWidget, QScrollArea, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QDate
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, Signal, QTimer, QDate, QRectF, QPointF
+from PySide6.QtGui import QFont, QColor, QPainter, QPicture
 
 # Try to import required packages
 try:
@@ -341,16 +341,31 @@ class SMCCalculator:
             swing_lows = []
 
             if swing_result is not None and not swing_result.empty:
+                # The SMC library returns DataFrame with columns: 'HighLow' and 'Level'
                 for idx in swing_result.index:
                     high_low_value = swing_result.loc[idx, 'HighLow']
-                    if pd.notna(high_low_value) and high_low_value != 0:
-                        if high_low_value == 1:
-                            swing_highs.append(idx)
-                        elif high_low_value == -1:
-                            swing_lows.append(idx)
+                    level_value = swing_result.loc[idx, 'Level']
+
+                    if pd.notna(high_low_value) and pd.notna(level_value):
+                        if high_low_value == 1:  # Swing High
+                            swing_highs.append({
+                                'index': idx,
+                                'price': float(level_value),
+                                'type': 'swing_high'
+                            })
+                        elif high_low_value == -1:  # Swing Low
+                            swing_lows.append({
+                                'index': idx,
+                                'price': float(level_value),
+                                'type': 'swing_low'
+                            })
 
             print(f"💰 Found {len(swing_highs)} swing highs and {len(swing_lows)} swing lows")
-            return {'swing_highs': swing_highs, 'swing_lows': swing_lows}
+            return {
+                'swing_highs': swing_highs,
+                'swing_lows': swing_lows,
+                'total_points': len(swing_highs) + len(swing_lows)
+            }
 
         except Exception as e:
             print(f"❌ Error calculating swing H/L: {e}")
@@ -358,7 +373,7 @@ class SMCCalculator:
 
     @staticmethod
     def calculate_bos_choch(ohlc_data: pd.DataFrame) -> List[Dict]:
-        """Calculate BOS (Break of Structure) and CHOCH (Change of Character)"""
+        """Calculate BOS/CHOCH with REAL break points - Enhanced List Format"""
         if not SMC_AVAILABLE or ohlc_data.empty:
             return []
 
@@ -373,14 +388,20 @@ class SMCCalculator:
                     for col in ['BOS', 'CHOCH']:
                         if col in bos_choch_result.columns:
                             value = bos_choch_result.loc[idx, col]
-                            if pd.notna(value) and value != 0:
+                            level = bos_choch_result.loc[idx, 'Level']
+                            broken_idx = bos_choch_result.loc[idx, 'BrokenIndex']
+
+                            if pd.notna(value) and value != 0 and pd.notna(level) and pd.notna(broken_idx):
                                 bos_choch_list.append({
                                     'index': idx,
                                     'type': f'{col}_{value}',
-                                    'price': df.iloc[idx]['close'] if idx < len(df) else 0
+                                    'level': level,  # 🆕 Real structure level
+                                    'broken_index': int(broken_idx),  # 🆕 Real break point
+                                    'price': df.iloc[idx]['close'] if idx < len(df) else 0,
+                                    'direction': int(value)  # 🆕 Direction for styling
                                 })
 
-            print(f"💰 Found {len(bos_choch_list)} BOS/CHOCH signals")
+            print(f"💰 Found {len(bos_choch_list)} REAL BOS/CHOCH signals")
             return bos_choch_list
 
         except Exception as e:
@@ -389,37 +410,197 @@ class SMCCalculator:
 
     @staticmethod
     def calculate_order_blocks(ohlc_data: pd.DataFrame) -> List[Dict]:
-        """Calculate Order Blocks"""
+        """Calculate Order Blocks with realistic market data structure"""
         if not SMC_AVAILABLE or ohlc_data.empty:
             return []
 
         try:
-            df = ohlc_data[['open', 'high', 'low', 'close']].copy()
-            if 'volume' not in df.columns:
-                df['volume'] = 1000
+            # Check if volume exists - SMC library requires it
+            if 'volume' not in ohlc_data.columns:
+                print("❌ Order Blocks require volume data - not available in dataset")
+                return []
 
-            ob_result = smc.smc.ob(df)
-            ob_list = []
+            df = ohlc_data[['open', 'high', 'low', 'close', 'volume']].copy()
+
+            # First calculate swing highs/lows (required for order blocks)
+            swing_hl_result = smc.smc.swing_highs_lows(df)
+
+            if swing_hl_result is None or swing_hl_result.empty:
+                print("📦 No swing highs/lows found for Order Blocks calculation")
+                return []
+
+            # Now calculate order blocks with swing highs/lows
+            ob_result = smc.smc.ob(df, swing_hl_result)
 
             if ob_result is not None and not ob_result.empty:
-                for idx in ob_result.index:
-                    for col in ob_result.columns:
-                        ob_value = ob_result.loc[idx, col]
-                        if pd.notna(ob_value) and ob_value != 0:
-                            row = df.iloc[idx] if idx < len(df) else None
-                            if row is not None:
-                                ob_list.append({
-                                    'index': idx,
-                                    'type': f'{col}_{ob_value}',
-                                    'top': row['high'],
-                                    'bottom': row['low']
-                                })
+                # Create realistic order block data structure similar to testa.py
+                ob_list = []
 
-            print(f"💰 Found {len(ob_list)} Order Blocks")
-            return ob_list
+                for idx in ob_result.index:
+                    ob_value = ob_result.loc[idx, 'OB']
+                    if pd.notna(ob_value) and ob_value != 0:
+                        top_value = ob_result.loc[idx, 'Top']
+                        bottom_value = ob_result.loc[idx, 'Bottom']
+
+                        if pd.notna(top_value) and pd.notna(bottom_value):
+                            # Get volume at this bar for realistic analysis
+                            volume_at_ob = df.loc[idx, 'volume'] if idx < len(df) else 0
+
+                            # Calculate mitigation index (when OB becomes invalid)
+                            mitigation_idx = None
+                            ob_price_level = float(top_value) if ob_value == 1 else float(bottom_value)
+
+                            # Look ahead to find when order block is mitigated
+                            for future_idx in range(idx + 1, len(df)):
+                                future_bar = df.iloc[future_idx]
+
+                                # Bullish OB mitigated when price closes below bottom
+                                if ob_value == 1 and future_bar['close'] < bottom_value:
+                                    mitigation_idx = future_idx
+                                    break
+                                # Bearish OB mitigated when price closes above top
+                                elif ob_value == -1 and future_bar['close'] > top_value:
+                                    mitigation_idx = future_idx
+                                    break
+
+                            ob_type = 'BullishOB' if ob_value == 1 else 'BearishOB'
+
+                            # Create realistic order block structure
+                            ob_data = {
+                                'index': idx,
+                                'type': ob_type,
+                                'top': float(top_value),
+                                'bottom': float(bottom_value),
+                                'volume': float(volume_at_ob),
+                                'mitigation_index': mitigation_idx,
+                                'is_active': mitigation_idx is None,  # Still active if not mitigated
+                                'ob_value': ob_value,
+                                'strength': 'high' if volume_at_ob > df['volume'].median() else 'low'
+                            }
+
+                            ob_list.append(ob_data)
+
+                print(f"📦 Found {len(ob_list)} Order Blocks with realistic market data")
+                return ob_list
+
+            print("📦 No Order Blocks found")
+            return []
 
         except Exception as e:
             print(f"❌ Error calculating Order Blocks: {e}")
+            return []
+
+    @staticmethod
+    def calculate_liquidity_levels(ohlc_data: pd.DataFrame) -> List[Dict]:
+        """Calculate liquidity levels using professional SMC approach"""
+        if not SMC_AVAILABLE or ohlc_data.empty:
+            return []
+
+        try:
+            # Step 1: Calculate swing highs/lows first
+            swing_result = smc.smc.swing_highs_lows(ohlc_data, swing_length=50)
+
+            if swing_result is None or swing_result.empty:
+                print("⚠️ No swing points found for liquidity calculation")
+                return []
+
+            # Step 2: Calculate liquidity using SMC library
+            liquidity_result = smc.smc.liquidity(ohlc_data, swing_result, range_percent=0.01)
+
+            if liquidity_result is None or liquidity_result.empty:
+                print("⚠️ No liquidity levels found")
+                return []
+
+            # Step 3: Convert to our format
+            liquidity_levels = []
+            for i in range(len(liquidity_result)):
+                if not pd.isna(liquidity_result['Liquidity'].iloc[i]):
+                    level_data = {
+                        'index': i,
+                        'price': float(liquidity_result['Level'].iloc[i]),
+                        'type': 'BSL' if liquidity_result['Liquidity'].iloc[i] == 1 else 'SSL',
+                        'end_index': int(liquidity_result['End'].iloc[i]) if not pd.isna(
+                            liquidity_result['End'].iloc[i]) else i + 15,
+                        'swept_index': int(liquidity_result['Swept'].iloc[i]) if not pd.isna(
+                            liquidity_result['Swept'].iloc[i]) else 0
+                    }
+                    liquidity_levels.append(level_data)
+
+            print(f"💰 Found {len(liquidity_levels)} professional liquidity levels")
+            return liquidity_levels
+
+        except Exception as e:
+            print(f"❌ Error calculating liquidity levels: {e}")
+            return []
+
+    @staticmethod
+    def calculate_previous_hl(ohlc_data: pd.DataFrame) -> List[Dict]:
+        """Calculate Previous High/Low - No volume required"""
+        if not SMC_AVAILABLE or ohlc_data.empty:
+            return []
+
+        try:
+            # Previous H/L only needs OHLC data
+            df = ohlc_data[['open', 'high', 'low', 'close']].copy()
+            prev_hl_result = smc.smc.previous_high_low(df)
+
+            if prev_hl_result is not None and not prev_hl_result.empty:
+                prev_hl_list = []
+                for idx in prev_hl_result.index:
+                    for col in ['PrevHigh', 'PrevLow']:
+                        if col in prev_hl_result.columns:
+                            hl_value = prev_hl_result.loc[idx, col]
+                            if pd.notna(hl_value) and hl_value != 0:
+                                prev_hl_list.append({
+                                    'index': idx,
+                                    'type': col,
+                                    'price': float(hl_value),
+                                    'level': 'high' if col == 'PrevHigh' else 'low'
+                                })
+
+                print(f"📈 Found {len(prev_hl_list)} Previous High/Low levels")
+                return prev_hl_list
+
+            print("📈 No Previous High/Low found")
+            return []
+
+        except Exception as e:
+            print(f"❌ Error calculating Previous High/Low: {e}")
+            return []
+
+    @staticmethod
+    def calculate_sessions(ohlc_data: pd.DataFrame) -> List[Dict]:
+        """Calculate Trading Sessions - No volume required"""
+        if not SMC_AVAILABLE or ohlc_data.empty:
+            return []
+
+        try:
+            # Sessions only need OHLC data
+            df = ohlc_data[['open', 'high', 'low', 'close']].copy()
+            sessions_result = smc.smc.sessions(df)
+
+            if sessions_result is not None and not sessions_result.empty:
+                sessions_list = []
+                for idx in sessions_result.index:
+                    for col in ['Session', 'Asia', 'London', 'NewYork']:
+                        if col in sessions_result.columns:
+                            session_value = sessions_result.loc[idx, col]
+                            if pd.notna(session_value) and session_value != 0:
+                                sessions_list.append({
+                                    'index': idx,
+                                    'type': col,
+                                    'session': col,
+                                    'active': bool(session_value)
+                                })
+
+                print(f"🌍 Found {len(sessions_list)} Session markers")
+                return sessions_list
+
+            print("🌍 No Sessions found")
+            return []
+
+        except Exception as e:
+            print(f"❌ Error calculating Sessions: {e}")
             return []
 
 
@@ -465,6 +646,157 @@ class CandlestickItem(pg.GraphicsObject):
 
     def boundingRect(self):
         return pg.QtCore.QRectF(self.picture.boundingRect())
+
+
+class SMCRectangleItem(pg.GraphicsObject):
+    """SMC rectangle visualization (FVG, Order Blocks) - Compatible with tuple format and PySide6"""
+
+    def __init__(self, rectangles, color, opacity=0.3, text_overlay=None):
+        super().__init__()
+        self.rectangles = rectangles
+        self.color = color
+        self.opacity = opacity
+        self.text_overlay = text_overlay
+        self.picture = None  # Lazy init
+
+    def generatePicture(self):
+        self.picture = QPicture()
+        p = QPainter(self.picture)
+
+        fill_color = QColor(self.color)
+        fill_color.setAlphaF(self.opacity)
+
+        border_color = QColor(self.color)
+        border_color.setAlphaF(0.8)
+
+        p.setPen(pg.mkPen(border_color, width=1))
+        p.setBrush(pg.mkBrush(fill_color))
+
+        for rect_data in self.rectangles:
+            if isinstance(rect_data, tuple) and len(rect_data) >= 4:
+                x0, y0, x1, y1 = rect_data[:4]
+                text = rect_data[4] if len(rect_data) > 4 else None
+                width = x1 - x0
+                height = y1 - y0
+            elif isinstance(rect_data, dict):
+                x0 = rect_data.get('x', 0)
+                y0 = rect_data.get('y', 0)
+                width = rect_data.get('width', 1)
+                height = rect_data.get('height', 1)
+                text = rect_data.get('text', None)
+            else:
+                continue
+
+            rect = QRectF(x0, y0, width, height)
+            p.drawRect(rect)
+
+            if text:
+                center = QPointF(x0 + width / 2, y0 + height / 2)
+                p.setPen(pg.mkPen('#ffffff', width=1))
+                p.drawText(center, str(text))
+
+        p.end()
+
+    def paint(self, p, *args):
+        if self.picture is None:
+            self.generatePicture()
+        p.drawPicture(0, 0, self.picture)
+
+    def boundingRect(self):
+        if not self.rectangles:
+            return QRectF()
+
+        x_coords = []
+        y_coords = []
+
+        for rect_data in self.rectangles:
+            if isinstance(rect_data, tuple) and len(rect_data) >= 4:
+                x0, y0, x1, y1 = rect_data[:4]
+            elif isinstance(rect_data, dict):
+                x0 = rect_data.get('x', 0)
+                y0 = rect_data.get('y', 0)
+                width = rect_data.get('width', 1)
+                height = rect_data.get('height', 1)
+                x1 = x0 + width
+                y1 = y0 + height
+            else:
+                continue
+
+            x_coords.extend([x0, x1])
+            y_coords.extend([y0, y1])
+
+        if not x_coords or not y_coords:
+            return QRectF()
+
+        min_x = min(x_coords)
+        max_x = max(x_coords)
+        min_y = min(y_coords)
+        max_y = max(y_coords)
+
+        return QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+
+
+class SMCLineItem(pg.GraphicsObject):
+    """Custom line item for SMC features matching testa.py style"""
+
+    def __init__(self, lines, color='blue', width=2, style='solid', text_labels=None):
+        super().__init__()
+        self.lines = lines
+        self.color = color
+        self.width = width
+        self.style = style
+        self.text_labels = text_labels or []
+        self.picture = None
+
+    def generatePicture(self):
+        self.picture = QPicture()
+        painter = QPainter(self.picture)
+
+        # Set up pen style
+        pen_style = Qt.SolidLine
+        if self.style == 'dash':
+            pen_style = Qt.DashLine
+        elif self.style == 'dot':
+            pen_style = Qt.DotLine
+        elif self.style == 'dashdot':
+            pen_style = Qt.DashDotLine
+
+        pen = pg.mkPen(color=self.color, width=self.width, style=pen_style)
+        painter.setPen(pen)
+
+        # Draw lines
+        for line in self.lines:
+            x1, y1 = line['x1'], line['y1']
+            x2, y2 = line['x2'], line['y2']
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        # Draw text labels
+        if self.text_labels:
+            painter.setPen(pg.mkPen(color='white', width=1))
+            for label in self.text_labels:
+                painter.drawText(QPointF(label['x'], label['y']), label['text'])
+
+        painter.end()
+
+    def paint(self, painter, option, widget):
+        if self.picture is None:
+            self.generatePicture()
+        painter.drawPicture(0, 0, self.picture)
+
+    def boundingRect(self):
+        if not self.lines:
+            return QRectF()
+
+        all_x = []
+        all_y = []
+        for line in self.lines:
+            all_x.extend([line['x1'], line['x2']])
+            all_y.extend([line['y1'], line['y2']])
+
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+
+        return QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
 
 
 class TechnicalIndicatorPanel(QWidget):
@@ -997,123 +1329,602 @@ class TradingChartView(QWidget):
                 print(f"❌ Error adding SMC feature {feature}: {e}")
 
     def add_fair_value_gaps(self):
-        """Add Fair Value Gaps with improved visualization"""
+        """Add Fair Value Gaps using professional display from testa.py"""
         try:
             fvg_data = self.smc_calculator.calculate_fvg(self.data_manager.bars_data)
 
-            if fvg_data:
-                for fvg in fvg_data:
-                    idx = fvg.get('index', 0)
-                    fvg_type = fvg.get('type', '')
-                    top = fvg.get('top', 0)
-                    bottom = fvg.get('bottom', 0)
+            if not fvg_data:
+                print("⚠️ No FVG data available")
+                return
 
-                    if idx < len(self.data_manager.bars_data) and top > bottom:
-                        width = 3
-                        height = top - bottom
-
-                        # Color based on FVG type
-                        if 'Bullish' in fvg_type:
-                            color = pg.mkBrush(34, 197, 94, 80)
-                            border_color = pg.mkPen(34, 197, 94, width=2)
-                        else:
-                            color = pg.mkBrush(239, 68, 68, 80)
-                            border_color = pg.mkPen(239, 68, 68, width=2)
-
-                        # Add rectangle to price chart
-                        rect_item = pg.QtWidgets.QGraphicsRectItem(
-                            idx - 0.5, bottom, width, height
-                        )
-                        rect_item.setBrush(color)
-                        rect_item.setPen(border_color)
-                        self.price_plot.addItem(rect_item)
-
-                        # Add label
-                        text_item = pg.TextItem(
-                            text="FVG",
-                            color=(255, 255, 255),
-                            anchor=(0.5, 0.5)
-                        )
-                        text_item.setPos(idx + 1, (top + bottom) / 2)
-                        self.price_plot.addItem(text_item)
-
-                print(f"💰 Added {len(fvg_data)} Fair Value Gaps to chart")
-            else:
-                print("💰 No Fair Value Gaps to display")
+            data_len = len(self.data_manager.bars_data)
+            self.display_fvg(fvg_data, data_len)
 
         except Exception as e:
-            print(f"❌ Error adding FVG: {e}")
+            print(f"❌ Error adding Fair Value Gaps: {e}")
+
+    def display_fvg(self, fvg_data, data_len):
+        """Professional FVG display matching testa.py style"""
+        rectangles = []
+        for fvg in fvg_data:
+            if isinstance(fvg, dict):
+                idx = fvg.get('index', 0)
+                top = fvg.get('top', 0)
+                bottom = fvg.get('bottom', 0)
+                fvg_type = fvg.get('type', 'bullish')
+
+                # Create rectangle data
+                x_start = max(0, idx - 2)
+                x_end = min(data_len - 1, idx + 10)
+                width = x_end - x_start
+                height = abs(top - bottom)
+
+                rectangles.append({
+                    'x': x_start,
+                    'y': min(top, bottom),
+                    'width': width,
+                    'height': height,
+                    'type': fvg_type
+                })
+
+        if rectangles:
+            # Use custom SMCRectangleItem for professional display
+            color = '#FFD700' if 'bullish' in str(rectangles[0].get('type', '')) else '#FF6347'
+            smc_item = SMCRectangleItem(rectangles, color=color, opacity=0.3, text_overlay="FVG")
+            self.price_plot.addItem(smc_item)
+            print(f"💰 Added {len(rectangles)} FVG rectangles")
 
     def add_swing_highs_lows(self):
-        """Add swing highs and lows with improved visualization"""
+        """Add Swing Highs/Lows using professional display from testa.py"""
         try:
-            swing_data = self.smc_calculator.calculate_swing_highs_lows(
-                self.data_manager.bars_data, swing_length=20
-            )
+            swing_data = self.smc_calculator.calculate_swing_highs_lows(self.data_manager.bars_data)
 
-            high_data = self.data_manager.bars_data['high'].values
-            low_data = self.data_manager.bars_data['low'].values
+            if not swing_data:
+                print("⚠️ No Swing H/L data available")
+                return
 
-            # Mark swing highs
-            swing_highs = swing_data.get('swing_highs', [])
-            if swing_highs:
-                swing_high_x = []
-                swing_high_y = []
-                for idx in swing_highs:
-                    if 0 <= idx < len(high_data):
-                        swing_high_x.append(idx)
-                        swing_high_y.append(high_data[idx])
-
-                if swing_high_x:
-                    swing_high_scatter = pg.ScatterPlotItem(
-                        x=swing_high_x, y=swing_high_y,
-                        symbol='t1', size=15, brush=pg.mkBrush(255, 100, 100),
-                        pen=pg.mkPen('white', width=2)
-                    )
-                    self.price_plot.addItem(swing_high_scatter)
-
-            # Mark swing lows
-            swing_lows = swing_data.get('swing_lows', [])
-            if swing_lows:
-                swing_low_x = []
-                swing_low_y = []
-                for idx in swing_lows:
-                    if 0 <= idx < len(low_data):
-                        swing_low_x.append(idx)
-                        swing_low_y.append(low_data[idx])
-
-                if swing_low_x:
-                    swing_low_scatter = pg.ScatterPlotItem(
-                        x=swing_low_x, y=swing_low_y,
-                        symbol='t', size=15, brush=pg.mkBrush(100, 255, 100),
-                        pen=pg.mkPen('white', width=2)
-                    )
-                    self.price_plot.addItem(swing_low_scatter)
-
-            print(f"💰 Added {len(swing_highs)} swing highs and {len(swing_lows)} swing lows")
+            data_len = len(self.data_manager.bars_data)
+            self.display_swing_highs_lows(swing_data, data_len)
 
         except Exception as e:
-            print(f"❌ Error adding swing H/L: {e}")
+            print(f"❌ Error adding Swing H/L: {e}")
+
+    def display_swing_highs_lows(self, swing_data, data_len):
+        """Display swing highs and lows using SMCLineItem - lines only, no dots"""
+        try:
+            swing_highs = swing_data.get('swing_highs', [])
+            swing_lows = swing_data.get('swing_lows', [])
+
+            print(f"🎯 Creating swing lines for {len(swing_highs)} highs and {len(swing_lows)} lows")
+
+            if not swing_highs and not swing_lows:
+                print("⚠️ No swing points to display")
+                return
+
+            # Prepare all swing points and sort chronologically
+            all_swings = []
+
+            # Add swing highs
+            for swing in swing_highs:
+                if 0 <= swing['index'] < data_len:
+                    all_swings.append({
+                        'index': swing['index'],
+                        'price': swing['price'],
+                        'type': 'high'
+                    })
+
+            # Add swing lows
+            for swing in swing_lows:
+                if 0 <= swing['index'] < data_len:
+                    all_swings.append({
+                        'index': swing['index'],
+                        'price': swing['price'],
+                        'type': 'low'
+                    })
+
+            # Sort by index (chronological order)
+            all_swings.sort(key=lambda x: x['index'])
+
+            if len(all_swings) < 2:
+                print("⚠️ Need at least 2 swing points to draw lines")
+                return
+
+            # Create lines for zigzag pattern (connecting all swings chronologically)
+            zigzag_lines = []
+            for i in range(len(all_swings) - 1):
+                current = all_swings[i]
+                next_swing = all_swings[i + 1]
+
+                zigzag_lines.append({
+                    'x1': current['index'],
+                    'y1': current['price'],
+                    'x2': next_swing['index'],
+                    'y2': next_swing['price']
+                })
+
+            # Create zigzag line item
+            if zigzag_lines:
+                zigzag_item = SMCLineItem(
+                    lines=zigzag_lines,
+                    color='yellow',
+                    width=2,
+                    style='dash'
+                )
+                self.price_plot.addItem(zigzag_item)
+                print(f"✅ Added zigzag line with {len(zigzag_lines)} segments")
+
+            # Store items for management
+            if not hasattr(self, 'smc_items'):
+                self.smc_items = []
+
+            # Store all created line items
+            if 'zigzag_item' in locals():
+                self.smc_items.append(zigzag_item)
+
+            total_items = len([item for item in ['zigzag_item'] if item in locals()])
+            print(f"💰 Successfully created {total_items} swing line items")
+
+        except Exception as e:
+            print(f"❌ Error displaying swing lines: {e}")
+            import traceback
+            traceback.print_exc()
 
     def add_bos_choch(self):
-        """Add BOS/CHOCH - placeholder implementation"""
-        print("💰 BOS/CHOCH feature placeholder")
+        """Add BOS/CHOCH using professional display from testa.py"""
+        try:
+            bos_choch_data = self.smc_calculator.calculate_bos_choch(self.data_manager.bars_data)
+
+            if not bos_choch_data:
+                print("⚠️ No BOS/CHOCH data available")
+                return
+
+            data_len = len(self.data_manager.bars_data)
+            self.display_bos_choch(bos_choch_data, data_len)
+
+        except Exception as e:
+            print(f"❌ Error adding BOS/CHOCH: {e}")
+
+    def display_bos_choch(self, bos_choch_data, data_len):
+        """Display REAL BOS/CHOCH with accurate break points"""
+        try:
+            if not bos_choch_data:
+                print("⚠️ No BOS/CHOCH data to display")
+                return
+
+            print(f"🎯 Creating REAL BOS/CHOCH display")
+
+            bos_lines = []
+            choch_lines = []
+            bos_labels = []
+            choch_labels = []
+
+            for signal in bos_choch_data:
+                try:
+                    start_idx = signal['index']
+                    signal_type = signal['type']
+                    level = signal.get('level', signal['price'])  # Use structure level if available
+                    broken_idx = signal.get('broken_index', start_idx + 20)  # Use real break or fallback
+                    direction = signal.get('direction', 1)
+
+                    # Ensure indices are within bounds
+                    if start_idx >= data_len or broken_idx >= data_len:
+                        continue
+
+                    # Create line from signal to ACTUAL break point
+                    line_data = {
+                        'x1': start_idx,
+                        'y1': level,  # 🆕 Use structure level, not close price
+                        'x2': broken_idx,  # 🆕 Use real break point
+                        'y2': level
+                    }
+
+                    # Process different signal types
+                    if signal_type.startswith('BOS_'):
+                        bos_lines.append(line_data)
+
+                        # Enhanced label with break info
+                        label_text = f"BOS {'↗' if direction == 1 else '↘'}"
+                        label_offset = abs(level) * 0.008 * direction
+
+                        bos_labels.append({
+                            'x': start_idx + (broken_idx - start_idx) * 0.3,  # 30% along the line
+                            'y': level + label_offset,
+                            'text': label_text
+                        })
+
+                    elif signal_type.startswith('CHOCH_'):
+                        choch_lines.append(line_data)
+
+                        # Enhanced label with break info
+                        label_text = f"CHoCH {'↗' if direction == 1 else '↘'}"
+                        label_offset = abs(level) * 0.008 * direction
+
+                        choch_labels.append({
+                            'x': start_idx + (broken_idx - start_idx) * 0.3,  # 30% along the line
+                            'y': level + label_offset,
+                            'text': label_text
+                        })
+
+                except Exception as e:
+                    print(f"⚠️ Error processing signal {signal}: {e}")
+                    continue
+
+            # Create BOS line items
+            if bos_lines:
+                bos_item = SMCLineItem(
+                    lines=bos_lines,
+                    color='#FF6B35',  # Vibrant Orange
+                    width=4,
+                    style='solid',
+                    text_labels=bos_labels
+                )
+                self.price_plot.addItem(bos_item)
+                print(f"✅ Added {len(bos_lines)} REAL BOS signals")
+
+            # Create CHOCH line items
+            if choch_lines:
+                choch_item = SMCLineItem(
+                    lines=choch_lines,
+                    color='#8A2BE2',  # Blue Violet
+                    width=3,
+                    style='dash',
+                    text_labels=choch_labels
+                )
+                self.price_plot.addItem(choch_item)
+                print(f"✅ Added {len(choch_lines)} REAL CHOCH signals")
+
+            # Store items for management
+            if not hasattr(self, 'smc_items'):
+                self.smc_items = []
+
+            if 'bos_item' in locals():
+                self.smc_items.append(bos_item)
+            if 'choch_item' in locals():
+                self.smc_items.append(choch_item)
+
+            total_signals = len(bos_lines) + len(choch_lines)
+            print(f"💰 Successfully displayed {total_signals} REAL BOS/CHOCH signals")
+
+        except Exception as e:
+            print(f"❌ Error displaying BOS/CHOCH: {e}")
+            import traceback
+            traceback.print_exc()
 
     def add_order_blocks(self):
-        """Add Order Blocks - placeholder implementation"""
-        print("💰 Order Blocks feature placeholder")
+        """Add Order Blocks using professional display from testa.py"""
+        try:
+            ob_data = self.smc_calculator.calculate_order_blocks(self.data_manager.bars_data)
+
+            if not ob_data:
+                print("⚠️ No Order Blocks data available")
+                return
+
+            data_len = len(self.data_manager.bars_data)
+            self.display_order_blocks(ob_data, data_len)
+
+        except Exception as e:
+            print(f"❌ Error adding Order Blocks: {e}")
+
+    def display_order_blocks(self, ob_data, data_len):
+        """Realistic Order Blocks display with dynamic mitigation and volume analysis using SMCRectangleItem"""
+        if not ob_data:
+            return
+
+        # Separate active and mitigated order blocks
+        active_bullish = []
+        active_bearish = []
+        mitigated_blocks = []
+
+        for ob in ob_data:
+            if isinstance(ob, dict):
+                idx = ob.get('index', 0)
+                top = ob.get('top', 0)
+                bottom = ob.get('bottom', 0)
+                ob_type = ob.get('type', 'BullishOB')
+                volume = ob.get('volume', 0)
+                mitigation_idx = ob.get('mitigation_index')
+                is_active = ob.get('is_active', True)
+
+                # Dynamic end calculation (realistic approach like testa.py)
+                if mitigation_idx is not None:
+                    # Order block ends when mitigated
+                    end_idx = min(mitigation_idx, data_len - 1)
+                else:
+                    # Still active, extends to current time
+                    end_idx = data_len - 1
+
+                # Create realistic volume-based text
+                if volume >= 1e9:
+                    volume_text = f"{volume / 1e9:.1f}B"
+                elif volume >= 1e6:
+                    volume_text = f"{volume / 1e6:.1f}M"
+                elif volume >= 1e3:
+                    volume_text = f"{volume / 1e3:.1f}K"
+                else:
+                    volume_text = f"{volume:.0f}"
+
+                # Add activity status to text
+                status = "Active" if is_active else "Mitigated"
+                text_overlay = f"OB: {volume_text} ({status})"
+
+                # Create rectangle tuple for SMCRectangleItem: (x0, y0, x1, y1, text)
+                rect_tuple = (
+                    idx,  # x0 - start index
+                    min(top, bottom),  # y0 - bottom price
+                    end_idx,  # x1 - end index
+                    max(top, bottom),  # y1 - top price
+                    text_overlay  # text overlay
+                )
+
+                # Categorize by type and status
+                if is_active:
+                    if 'Bullish' in ob_type:
+                        active_bullish.append(rect_tuple)
+                    else:
+                        active_bearish.append(rect_tuple)
+                else:
+                    mitigated_blocks.append(rect_tuple)
+
+        # Colors for different order block states
+        active_bullish_color = '#4169E1'  # Royal Blue for active bullish
+        active_bearish_color = '#DC143C'  # Crimson for active bearish
+        mitigated_color = '#808080'  # Gray for mitigated blocks
+
+        # Display mitigated blocks first (lower layer, lower opacity)
+        if mitigated_blocks:
+            mitigated_item = SMCRectangleItem(
+                mitigated_blocks,
+                color=mitigated_color,
+                opacity=0.15,
+                text_overlay=None  # Text is in individual rect_data[4]
+            )
+            self.price_plot.addItem(mitigated_item)
+            if hasattr(self, 'smc_items'):
+                self.smc_items['MitigatedOrderBlocks'] = mitigated_item
+
+        # Display active bullish order blocks
+        if active_bullish:
+            bullish_item = SMCRectangleItem(
+                active_bullish,
+                color=active_bullish_color,
+                opacity=0.25,
+                text_overlay=None  # Text is in individual rect_data[4]
+            )
+            self.price_plot.addItem(bullish_item)
+            if hasattr(self, 'smc_items'):
+                self.smc_items['BullishOrderBlocks'] = bullish_item
+
+        # Display active bearish order blocks
+        if active_bearish:
+            bearish_item = SMCRectangleItem(
+                active_bearish,
+                color=active_bearish_color,
+                opacity=0.25,
+                text_overlay=None  # Text is in individual rect_data[4]
+            )
+            self.price_plot.addItem(bearish_item)
+            if hasattr(self, 'smc_items'):
+                self.smc_items['BearishOrderBlocks'] = bearish_item
+
+        # Summary
+        total_active = len(active_bullish) + len(active_bearish)
+        total_mitigated = len(mitigated_blocks)
+        print(f"💰 Added {total_active} Active + {total_mitigated} Mitigated Order Blocks using SMCRectangleItem")
 
     def add_liquidity_levels(self):
-        """Add Liquidity Levels - placeholder implementation"""
-        print("💰 Liquidity Levels feature placeholder")
+        """Add Liquidity Levels using professional display from testa.py"""
+        try:
+            liquidity_data = self.smc_calculator.calculate_liquidity_levels(self.data_manager.bars_data)
+
+            if not liquidity_data:
+                print("⚠️ No Liquidity data available")
+                return
+
+            data_len = len(self.data_manager.bars_data)
+            self.display_liquidity(liquidity_data, data_len)
+
+        except Exception as e:
+            print(f"❌ Error adding Liquidity Levels: {e}")
+
+    def display_liquidity(self, liquidity_data, data_len):
+        """Professional Liquidity display with realistic market representation"""
+        lines = []
+        text_labels = []
+
+        for liq in liquidity_data:
+            if isinstance(liq, dict):
+                start_idx = liq.get('index', 0)
+                price = liq.get('price', 0)
+                liq_type = liq.get('type', 'BSL')
+                end_idx = liq.get('end_index', start_idx + 15)
+                swept_idx = liq.get('swept_index', 0)
+
+                # ✅ REALISTIC: Draw line from liquidity point to actual end
+                lines.append({
+                    'x1': start_idx,
+                    'y1': price,
+                    'x2': end_idx,
+                    'y2': price,
+                    'type': liq_type
+                })
+
+                # Add liquidity label
+                mid_x = (start_idx + end_idx) / 2
+                text_labels.append({
+                    'x': mid_x,
+                    'y': price,
+                    'text': liq_type
+                })
+
+                # ✅ REALISTIC: Show sweep line if liquidity was taken
+                if swept_idx > 0 and swept_idx < data_len:
+                    # Get the price where liquidity was swept
+                    try:
+                        if liq_type == 'BSL':  # Bullish liquidity swept above
+                            swept_price = self.data_manager.bars_data.iloc[swept_idx]['high']
+                        else:  # Bearish liquidity swept below
+                            swept_price = self.data_manager.bars_data.iloc[swept_idx]['low']
+
+                        # Draw sweep line from end of liquidity to sweep point
+                        lines.append({
+                            'x1': end_idx,
+                            'y1': price,
+                            'x2': swept_idx,
+                            'y2': swept_price,
+                            'type': 'swept'
+                        })
+
+                        # Add "SWEPT" label
+                        sweep_mid_x = (end_idx + swept_idx) / 2
+                        sweep_mid_y = (price + swept_price) / 2
+                        text_labels.append({
+                            'x': sweep_mid_x,
+                            'y': sweep_mid_y,
+                            'text': 'SWEPT'
+                        })
+                    except:
+                        pass
+
+        if lines:
+            # ✅ REALISTIC: Use professional colors and styles
+            color = '#ffa500'  # Orange like testa.py
+            smc_item = SMCLineItem(lines, color=color, width=2, style='dash', text_labels=text_labels)
+            self.price_plot.addItem(smc_item)
+            print(
+                f"💧 Added {len([l for l in lines if l.get('type') != 'swept'])} Liquidity levels with {len([l for l in lines if l.get('type') == 'swept'])} sweep lines")
 
     def add_previous_hl(self):
-        """Add Previous H/L - placeholder implementation"""
-        print("💰 Previous H/L feature placeholder")
+        """Add Previous High/Low using professional display from testa.py"""
+        try:
+            prev_hl_data = self.smc_calculator.calculate_previous_hl(self.data_manager.bars_data)
+
+            if not prev_hl_data:
+                print("⚠️ No Previous H/L data available")
+                return
+
+            data_len = len(self.data_manager.bars_data)
+            self.display_prev_hl(prev_hl_data, data_len)
+
+        except Exception as e:
+            print(f"❌ Error adding Previous H/L: {e}")
+
+    def display_prev_hl(self, prev_hl_data, data_len):
+        """Professional Previous H/L display matching testa.py style"""
+        lines = []
+
+        for prev_hl in prev_hl_data:
+            if isinstance(prev_hl, dict):
+                idx = prev_hl.get('index', 0)
+                price = prev_hl.get('price', 0)
+                hl_type = prev_hl.get('type', 'PrevHL')
+
+                # Create horizontal line spanning multiple bars
+                x_start = max(0, idx - 10)
+                x_end = min(data_len - 1, idx + 30)
+
+                lines.append({
+                    'x1': x_start,
+                    'y1': price,
+                    'x2': x_end,
+                    'y2': price,
+                    'type': hl_type
+                })
+
+        if lines:
+            # Use custom SMCLineItem with appropriate colors
+            color = '#9932CC' if 'High' in str(lines[0].get('type', '')) else '#32CD32'
+            smc_item = SMCLineItem(
+                lines,
+                color=color,
+                width=2,
+                style='dashed',
+                text_labels=[f"P{line.get('type', '')}" for line in lines]
+            )
+            self.price_plot.addItem(smc_item)
+            self.smc_items.append(smc_item)
+            print(f"💰 Added {len(lines)} Previous H/L lines")
+
 
     def add_sessions(self):
-        """Add Trading Sessions - placeholder implementation"""
-        print("💰 Trading Sessions feature placeholder")
+        """Add Trading Sessions using professional display from testa.py"""
+        try:
+            sessions_data = self.smc_calculator.calculate_sessions(self.data_manager.bars_data)
+
+            if not sessions_data:
+                print("⚠️ No Sessions data available")
+                return
+
+            data_len = len(self.data_manager.bars_data)
+            self.display_sessions(sessions_data, data_len)
+
+        except Exception as e:
+            print(f"❌ Error adding Sessions: {e}")
+
+    def display_sessions(self, sessions_data, data_len):
+        """Professional Sessions display matching testa.py style"""
+        rectangles = []
+
+        # Group sessions by type for better visualization
+        session_groups = {}
+        for session in sessions_data:
+            if isinstance(session, dict):
+                session_type = session.get('session', 'Unknown')
+                if session_type not in session_groups:
+                    session_groups[session_type] = []
+                session_groups[session_type].append(session)
+
+        # Create rectangles for each session group
+        for session_type, sessions in session_groups.items():
+            if not sessions:
+                continue
+
+            # Find session boundaries
+            start_idx = min(s.get('index', 0) for s in sessions)
+            end_idx = max(s.get('index', 0) for s in sessions)
+
+            if end_idx - start_idx < 5:  # Minimum session width
+                end_idx = start_idx + 10
+
+            # Get price range for the session
+            prices = [s.get('price', 0) for s in sessions if s.get('price', 0) > 0]
+            if prices:
+                session_high = max(prices) * 1.002  # Slight padding
+                session_low = min(prices) * 0.998
+            else:
+                # Fallback to a default range
+                session_high = 100
+                session_low = 90
+
+            rectangles.append({
+                'x': start_idx,
+                'y': session_low,
+                'width': end_idx - start_idx,
+                'height': session_high - session_low,
+                'type': session_type
+            })
+
+        if rectangles:
+            # Use different colors for different session types
+            session_colors = {
+                'AsianSession': '#4169E1',
+                'LondonSession': '#DC143C',
+                'NewYorkSession': '#228B22',
+                'Session': '#9932CC'
+            }
+
+            # Get color based on session type
+            first_type = rectangles[0].get('type', 'Session')
+            color = session_colors.get(first_type, '#808080')
+
+            smc_item = SMCRectangleItem(
+                rectangles,
+                color=color,
+                opacity=0.15,
+                text_overlay=f"SESSION"
+            )
+            self.price_plot.addItem(smc_item)
+            self.smc_items.append(smc_item)
+            print(f"💰 Added {len(rectangles)} Session rectangles")
 
 
 class AdvancedTradingWidget(QWidget):
