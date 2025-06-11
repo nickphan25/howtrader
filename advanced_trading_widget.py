@@ -1615,101 +1615,122 @@ class TradingChartView(QWidget):
         active_bearish = []
         mitigated_blocks = []
 
-        for ob in ob_data:
-            if isinstance(ob, dict):
-                idx = ob.get('index', 0)
-                top = ob.get('top', 0)
-                bottom = ob.get('bottom', 0)
-                ob_type = ob.get('type', 'BullishOB')
-                volume = ob.get('volume', 0)
-                mitigation_idx = ob.get('mitigation_index')
-                is_active = ob.get('is_active', True)
+        for i, ob in enumerate(ob_data):
+            try:
+                if isinstance(ob, dict):
+                    idx = ob.get('index', 0)
+                    top = ob.get('top', 0)
+                    bottom = ob.get('bottom', 0)
+                    ob_type = ob.get('type', 'BullishOB')
+                    volume = ob.get('volume', 0)
+                    mitigation_idx = ob.get('mitigation_index')
+                    is_active = ob.get('is_active', True)
 
-                # Dynamic end calculation (realistic approach like testa.py)
-                if mitigation_idx is not None:
-                    # Order block ends when mitigated
-                    end_idx = min(mitigation_idx, data_len - 1)
-                else:
-                    # Still active, extends to current time
-                    end_idx = data_len - 1
+                    # Validate data
+                    if not isinstance(idx, (int, float)) or idx < 0:
+                        print(f"⚠️ Invalid index in order block {i}: {idx}")
+                        continue
 
-                # Create realistic volume-based text
-                if volume >= 1e9:
-                    volume_text = f"{volume / 1e9:.1f}B"
-                elif volume >= 1e6:
-                    volume_text = f"{volume / 1e6:.1f}M"
-                elif volume >= 1e3:
-                    volume_text = f"{volume / 1e3:.1f}K"
-                else:
-                    volume_text = f"{volume:.0f}"
-
-                # Add activity status to text
-                status = "Active" if is_active else "Mitigated"
-                text_overlay = f"OB: {volume_text} ({status})"
-
-                # Create rectangle tuple for SMCRectangleItem: (x0, y0, x1, y1, text)
-                rect_tuple = (
-                    idx,  # x0 - start index
-                    min(top, bottom),  # y0 - bottom price
-                    end_idx,  # x1 - end index
-                    max(top, bottom),  # y1 - top price
-                    text_overlay  # text overlay
-                )
-
-                # Categorize by type and status
-                if is_active:
-                    if 'Bullish' in ob_type:
-                        active_bullish.append(rect_tuple)
+                    # Dynamic end calculation (realistic approach like testa.py)
+                    if mitigation_idx is not None:
+                        # Order block ends when mitigated
+                        end_idx = min(int(mitigation_idx), data_len - 1)
                     else:
-                        active_bearish.append(rect_tuple)
+                        # Still active, extends to current time
+                        end_idx = data_len - 1
+
+                    # Create realistic volume-based text
+                    if volume >= 1e9:
+                        volume_text = f"{volume / 1e9:.1f}B"
+                    elif volume >= 1e6:
+                        volume_text = f"{volume / 1e6:.1f}M"
+                    elif volume >= 1e3:
+                        volume_text = f"{volume / 1e3:.1f}K"
+                    else:
+                        volume_text = f"{volume:.0f}"
+
+                    # Add activity status to text
+                    status = "Active" if is_active else "Mitigated"
+                    text_overlay = f"OB: {volume_text} ({status})"
+
+                    # Create rectangle tuple for SMCRectangleItem: (x0, y0, x1, y1, text)
+                    rect_tuple = (
+                        int(idx),  # x0 - start index (ensure integer)
+                        float(min(top, bottom)),  # y0 - bottom price
+                        int(end_idx),  # x1 - end index (ensure integer)
+                        float(max(top, bottom)),  # y1 - top price
+                        text_overlay  # text overlay
+                    )
+
+                    # Categorize by type and status
+                    if is_active:
+                        if 'Bullish' in ob_type:
+                            active_bullish.append(rect_tuple)
+                        else:
+                            active_bearish.append(rect_tuple)
+                    else:
+                        mitigated_blocks.append(rect_tuple)
                 else:
-                    mitigated_blocks.append(rect_tuple)
+                    print(f"⚠️ Unexpected order block format at index {i}: {type(ob)} - {ob}")
+                    continue
+
+            except Exception as e:
+                print(f"❌ Error processing order block {i}: {e}")
+                print(f"   Data: {ob}")
+                continue
 
         # Colors for different order block states
         active_bullish_color = '#4169E1'  # Royal Blue for active bullish
         active_bearish_color = '#DC143C'  # Crimson for active bearish
         mitigated_color = '#808080'  # Gray for mitigated blocks
 
-        # Display mitigated blocks first (lower layer, lower opacity)
-        if mitigated_blocks:
-            mitigated_item = SMCRectangleItem(
-                mitigated_blocks,
-                color=mitigated_color,
-                opacity=0.15,
-                text_overlay=None  # Text is in individual rect_data[4]
-            )
-            self.price_plot.addItem(mitigated_item)
-            if hasattr(self, 'smc_items'):
-                self.smc_items['MitigatedOrderBlocks'] = mitigated_item
+        try:
+            # Display mitigated blocks first (lower layer, lower opacity)
+            if mitigated_blocks:
+                mitigated_item = SMCRectangleItem(
+                    mitigated_blocks,
+                    color=mitigated_color,
+                    opacity=0.15,
+                    text_overlay=None  # Text is in individual rect_data[4]
+                )
+                self.price_plot.addItem(mitigated_item)
+                if hasattr(self, 'smc_items'):
+                    self.smc_items['MitigatedOrderBlocks'] = mitigated_item
 
-        # Display active bullish order blocks
-        if active_bullish:
-            bullish_item = SMCRectangleItem(
-                active_bullish,
-                color=active_bullish_color,
-                opacity=0.25,
-                text_overlay=None  # Text is in individual rect_data[4]
-            )
-            self.price_plot.addItem(bullish_item)
-            if hasattr(self, 'smc_items'):
-                self.smc_items['BullishOrderBlocks'] = bullish_item
+            # Display active bullish order blocks
+            if active_bullish:
+                bullish_item = SMCRectangleItem(
+                    active_bullish,
+                    color=active_bullish_color,
+                    opacity=0.25,
+                    text_overlay=None  # Text is in individual rect_data[4]
+                )
+                self.price_plot.addItem(bullish_item)
+                if hasattr(self, 'smc_items'):
+                    self.smc_items['BullishOrderBlocks'] = bullish_item
 
-        # Display active bearish order blocks
-        if active_bearish:
-            bearish_item = SMCRectangleItem(
-                active_bearish,
-                color=active_bearish_color,
-                opacity=0.25,
-                text_overlay=None  # Text is in individual rect_data[4]
-            )
-            self.price_plot.addItem(bearish_item)
-            if hasattr(self, 'smc_items'):
-                self.smc_items['BearishOrderBlocks'] = bearish_item
+            # Display active bearish order blocks
+            if active_bearish:
+                bearish_item = SMCRectangleItem(
+                    active_bearish,
+                    color=active_bearish_color,
+                    opacity=0.25,
+                    text_overlay=None  # Text is in individual rect_data[4]
+                )
+                self.price_plot.addItem(bearish_item)
+                if hasattr(self, 'smc_items'):
+                    self.smc_items['BearishOrderBlocks'] = bearish_item
 
-        # Summary
-        total_active = len(active_bullish) + len(active_bearish)
-        total_mitigated = len(mitigated_blocks)
-        print(f"💰 Added {total_active} Active + {total_mitigated} Mitigated Order Blocks using SMCRectangleItem")
+            # Summary
+            total_active = len(active_bullish) + len(active_bearish)
+            total_mitigated = len(mitigated_blocks)
+            print(f"💰 Added {total_active} Active + {total_mitigated} Mitigated Order Blocks using SMCRectangleItem")
+
+        except Exception as e:
+            print(f"❌ Error creating SMCRectangleItem: {e}")
+            print(f"   Active bullish: {len(active_bullish) if active_bullish else 0}")
+            print(f"   Active bearish: {len(active_bearish) if active_bearish else 0}")
+            print(f"   Mitigated: {len(mitigated_blocks) if mitigated_blocks else 0}")
 
     def add_liquidity_levels(self):
         """Add Liquidity Levels using professional display from testa.py"""
