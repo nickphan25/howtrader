@@ -3,7 +3,6 @@
 """
 from howtrader.trader.object import Interval
 from datetime import datetime
-from examples.strategies.atr_rsi_15min_strategy import  AtrRsi15MinStrategy  # 要导入你回测的策略，你自己开发的。
 import pandas as pd
 import sys
 
@@ -12,6 +11,10 @@ from howtrader.app.cta_strategy.backtesting import BacktestingEngine
 
 # Initialize Qt Application at module level
 from PySide6.QtWidgets import QApplication
+# from examples.strategies.atr_rsi_15min_strategy import  AtrRsi15MinStrategy  # 要导入你回测的策略，你自己开发的。
+# from examples.strategies.simplesmc import SMCBasic
+from examples.strategies.fixed_trade_time_strategy import FixedTradeTimeStrategy
+
 
 # Global application instance
 app = None
@@ -154,8 +157,8 @@ def run_backtest_with_widget():
     engine.set_parameters(
         vt_symbol="BTCUSDT.BINANCE",
         interval=Interval.MINUTE,
-        start=datetime(2025, 5, 1),
-        end=datetime(2025, 5, 15),
+        start=datetime(2025, 3, 1),
+        end=datetime(2025, 4, 30),
         rate=4 / 10000,
         slippage=0,
         size=1,
@@ -163,7 +166,8 @@ def run_backtest_with_widget():
         capital=100000,
     )
 
-    engine.add_strategy(AtrRsi15MinStrategy, {})
+    # engine.add_strategy(AtrRsi15MinStrategy, {})
+    engine.add_strategy(FixedTradeTimeStrategy, {})
     
     print("📊 Loading data...")
     engine.load_data()

@@ -1,15 +1,15 @@
 from howtrader.app.cta_strategy.backtesting import BacktestingEngine, OptimizationSetting
 from howtrader.trader.object import Interval
 from datetime import datetime
-from examples.strategies.atr_rsi_strategy import  AtrRsiStrategy  # 要导入你回测的策略，你自己开发的。
-# from strategies.atr_rsi_15min_strategy import AtrRsi15MinStrategy
+# from examples.strategies.atr_rsi_strategy import  AtrRsiStrategy  # 要导入你回测的策略，你自己开发的。
+from examples.strategies.testsmc import SMCBasic
 
 engine = BacktestingEngine()
 engine.set_parameters(
     vt_symbol="BTCUSDT.BINANCE",
     interval=Interval.MINUTE,
-    start=datetime(2025, 4, 1),
-    end=datetime(2025, 5, 1),
+    start=datetime(2025, 1, 1),
+    end=datetime(2025, 1, 3),
     rate=4/10000,
     slippage=0,
     size=1,
@@ -17,15 +17,15 @@ engine.set_parameters(
     capital=1000000,
 )
 
-engine.add_strategy(AtrRsiStrategy, {})
+engine.add_strategy(SMCBasic, {})
 # engine.add_strategy(AtrRsi15MinStrategy, {})
 
 engine.load_data()
 engine.run_backtesting()
 df = engine.calculate_result()
 engine.calculate_statistics()
-engine.show_chart()
-engine.show_widget()
+# engine.show_chart()
+# engine.show_widget()
 # setting = OptimizationSetting()
 # setting.set_target("sharpe_ratio")
 # setting.add_parameter("atr_length", 3, 39, 1)

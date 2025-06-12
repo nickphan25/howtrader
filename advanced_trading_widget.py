@@ -328,7 +328,7 @@ class SMCCalculator:
             return []
 
     @staticmethod
-    def calculate_swing_highs_lows(ohlc_data: pd.DataFrame, swing_length: int = 50) -> Dict:
+    def calculate_swing_highs_lows(ohlc_data: pd.DataFrame, swing_length: int = 5) -> Dict:
         """Calculate swing highs and lows"""
         if not SMC_AVAILABLE or ohlc_data.empty:
             return {'swing_highs': [], 'swing_lows': []}
@@ -379,7 +379,7 @@ class SMCCalculator:
 
         try:
             df = ohlc_data[['open', 'high', 'low', 'close']].copy()
-            swing_result = smc.smc.swing_highs_lows(df, swing_length=20)
+            swing_result = smc.smc.swing_highs_lows(df, swing_length=5)
             bos_choch_result = smc.smc.bos_choch(df, swing_result, close_break=True)
 
             bos_choch_list = []
@@ -535,72 +535,244 @@ class SMCCalculator:
 
     @staticmethod
     def calculate_previous_hl(ohlc_data: pd.DataFrame) -> List[Dict]:
-        """Calculate Previous High/Low - No volume required"""
-        if not SMC_AVAILABLE or ohlc_data.empty:
+        """Calculate Previous Highs/Lows with market-realistic structure"""
+        if ohlc_data.empty:
             return []
 
         try:
-            # Previous H/L only needs OHLC data
-            df = ohlc_data[['open', 'high', 'low', 'close']].copy()
-            prev_hl_result = smc.smc.previous_high_low(df)
+            # First get swing highs and lows as foundation
+            swing_data = SMCCalculator.calculate_swing_highs_lows(ohlc_data, swing_length=20)
 
-            if prev_hl_result is not None and not prev_hl_result.empty:
-                prev_hl_list = []
-                for idx in prev_hl_result.index:
-                    for col in ['PrevHigh', 'PrevLow']:
-                        if col in prev_hl_result.columns:
-                            hl_value = prev_hl_result.loc[idx, col]
-                            if pd.notna(hl_value) and hl_value != 0:
-                                prev_hl_list.append({
-                                    'index': idx,
-                                    'type': col,
-                                    'price': float(hl_value),
-                                    'level': 'high' if col == 'PrevHigh' else 'low'
-                                })
+            prev_hl_lines = []
 
-                print(f"📈 Found {len(prev_hl_list)} Previous High/Low levels")
-                return prev_hl_list
+            # Process Previous Highs
+            if swing_data['swing_highs']:
+                high_levels = []
+                for swing_high in swing_data['swing_highs']:
+                    idx = swing_high['index']
+                    price = swing_high['price']
 
-            print("📈 No Previous High/Low found")
-            return []
+                    # Only add if it's a new level (avoid duplicates)
+                    if not high_levels or abs(price - high_levels[-1]['price']) > price * 0.001:  # 0.1% threshold
+                        high_levels.append({'index': idx, 'price': price})
+
+                # Create lines between consecutive high levels
+                for i in range(len(high_levels) - 1):
+                    current = high_levels[i]
+                    next_level = high_levels[i + 1]
+
+                    prev_hl_lines.append({
+                        'start_index': current['index'],
+                        'end_index': next_level['index'],
+                        'price': current['price'],
+                        'type': 'PreviousHigh',
+                        'level_id': f"PH_{i}",
+                        'strength': 1.0  # Could be enhanced with volume/touch analysis
+                    })
+
+            # Process Previous Lows
+            if swing_data['swing_lows']:
+                low_levels = []
+                for swing_low in swing_data['swing_lows']:
+                    idx = swing_low['index']
+                    price = swing_low['price']
+
+                    # Only add if it's a new level (avoid duplicates)
+                    if not low_levels or abs(price - low_levels[-1]['price']) > price * 0.001:  # 0.1% threshold
+                        low_levels.append({'index': idx, 'price': price})
+
+                # Create lines between consecutive low levels
+                for i in range(len(low_levels) - 1):
+                    current = low_levels[i]
+                    next_level = low_levels[i + 1]
+
+                    prev_hl_lines.append({
+                        'start_index': current['index'],
+                        'end_index': next_level['index'],
+                        'price': current['price'],
+                        'type': 'PreviousLow',
+                        'level_id': f"PL_{i}",
+                        'strength': 1.0  # Could be enhanced with volume/touch analysis
+                    })
+
+            print(f"💰 Found {len(prev_hl_lines)} Previous H/L lines")
+            return prev_hl_lines
 
         except Exception as e:
-            print(f"❌ Error calculating Previous High/Low: {e}")
+            print(f"❌ Error calculating Previous H/L: {e}")
             return []
 
     @staticmethod
     def calculate_sessions(ohlc_data: pd.DataFrame) -> List[Dict]:
-        """Calculate Trading Sessions - No volume required"""
-        if not SMC_AVAILABLE or ohlc_data.empty:
-            return []
+        """
+        Calculate trading sessions using SMC library
 
+        Args:
+            ohlc_data: DataFrame with OHLC data
+
+        Returns:
+            List[Dict]: Session data
+        """
         try:
-            # Sessions only need OHLC data
-            df = ohlc_data[['open', 'high', 'low', 'close']].copy()
-            sessions_result = smc.smc.sessions(df)
+            if ohlc_data.empty:
+                print("⚠️ No OHLC data provided for session calculation")
+                return []
 
-            if sessions_result is not None and not sessions_result.empty:
-                sessions_list = []
-                for idx in sessions_result.index:
-                    for col in ['Session', 'Asia', 'London', 'NewYork']:
-                        if col in sessions_result.columns:
-                            session_value = sessions_result.loc[idx, col]
-                            if pd.notna(session_value) and session_value != 0:
-                                sessions_list.append({
-                                    'index': idx,
-                                    'type': col,
-                                    'session': col,
-                                    'active': bool(session_value)
-                                })
+            # Prepare DataFrame for SMC library
+            df = ohlc_data.copy()
 
-                print(f"🌍 Found {len(sessions_list)} Session markers")
-                return sessions_list
+            # Rename columns if needed for SMC compatibility
+            column_mapping = {
+                'open_price': 'open',
+                'high_price': 'high',
+                'low_price': 'low',
+                'close_price': 'close'
+            }
 
-            print("🌍 No Sessions found")
-            return []
+            for old_col, new_col in column_mapping.items():
+                if old_col in df.columns:
+                    df = df.rename(columns={old_col: new_col})
+
+            # Ensure we have required columns
+            required_cols = ['open', 'high', 'low', 'close']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                print(f"⚠️ Missing required columns: {missing_cols}")
+                return []
+
+            # Ensure datetime index for SMC
+            if 'datetime' in df.columns and not isinstance(df.index, pd.DatetimeIndex):
+                df = df.set_index('datetime')
+            elif not isinstance(df.index, pd.DatetimeIndex):
+                print("⚠️ DataFrame must have datetime index for sessions calculation")
+                return []
+
+            sessions_data = []
+
+            # Standard session configurations (matching SMC library)
+            session_configs = ['Tokyo', 'London', 'New York']
+
+            print("🎯 Calculating trading sessions using SMC library...")
+
+            # Use SMC library with correct class method calling
+            try:
+                if SMC_AVAILABLE and smc is not None:
+                    for session_name in session_configs:
+                        try:
+                            print(f"📊 Processing {session_name} session...")
+
+                            # Call sessions method - CORRECT WAY: smc.smc.sessions()
+                            session_result = smc.smc.sessions(df, session=session_name)
+
+                            # Check if session_result has data
+                            if session_result is None or session_result.empty:
+                                print(f"⚠️ No {session_name} session data returned")
+                                continue
+
+                            print(f"✅ {session_name} session result shape: {session_result.shape}")
+                            print(f"📋 {session_name} columns: {list(session_result.columns)}")
+
+                            # Process session results - find session boundaries
+                            # Get active periods where Active == 1
+                            active_mask = session_result['Active'] == 1
+                            active_indices = session_result[active_mask].index.tolist()
+
+                            if len(active_indices) == 0:
+                                print(f"⚠️ No active periods found for {session_name}")
+                                continue
+
+                            print(f"🔍 Found {len(active_indices)} active periods for {session_name}")
+
+                            # Group consecutive active periods into sessions
+                            session_groups = []
+                            current_group = []
+
+                            for i, idx in enumerate(active_indices):
+                                if i == 0:
+                                    current_group = [idx]
+                                else:
+                                    # Check if this index is consecutive to the previous
+                                    # Since these are integer indices, we can compare directly
+                                    prev_idx = active_indices[i - 1]
+
+                                    if idx - prev_idx == 1:
+                                        current_group.append(idx)
+                                    else:
+                                        # Start new group - save current group first
+                                        if current_group:
+                                            session_groups.append(current_group)
+                                        current_group = [idx]
+
+                            # Add the last group
+                            if current_group:
+                                session_groups.append(current_group)
+
+                            # Create session data from groups
+                            for group_idx, group in enumerate(session_groups):
+                                try:
+                                    start_idx = group[0]
+                                    end_idx = group[-1]
+
+                                    # Get the actual datetime from the original DataFrame
+                                    start_time = df.index[start_idx]
+                                    end_time = df.index[end_idx]
+
+                                    # Get session high/low from the SMC result
+                                    session_high = session_result.loc[group, 'High'].max()
+                                    session_low = session_result.loc[group, 'Low'].min()
+
+                                    # Filter out zero values - use actual OHLC data instead
+                                    if session_low == 0 or pd.isna(session_low):
+                                        session_low = df.iloc[group]['low'].min()
+                                    if session_high == 0 or pd.isna(session_high):
+                                        session_high = df.iloc[group]['high'].max()
+
+                                    # Create session data entry
+                                    session_data = {
+                                        'session': session_name,
+                                        'datetime': start_time,
+                                        'high': float(session_high),
+                                        'low': float(session_low),
+                                        'index': start_idx,  # Use integer index for display
+                                        'price': float((session_high + session_low) / 2),
+                                        'duration': len(group),
+                                        'start_time': start_time,
+                                        'end_time': end_time,
+                                        'start_index': start_idx,
+                                        'end_index': end_idx
+                                    }
+
+                                    sessions_data.append(session_data)
+
+                                except Exception as group_error:
+                                    print(f"⚠️ Error processing group {group_idx} for {session_name}: {group_error}")
+                                    continue
+
+                            print(f"✅ {session_name}: Found {len(session_groups)} session periods")
+
+                        except Exception as smc_error:
+                            print(f"⚠️ SMC {session_name} session error: {smc_error}")
+                            import traceback
+                            traceback.print_exc()
+                            continue
+
+                else:
+                    print("⚠️ SMC library not available")
+                    return []
+
+            except Exception as smc_lib_error:
+                print(f"❌ SMC library error: {smc_lib_error}")
+                import traceback
+                traceback.print_exc()
+                return []
+
+            print(f"✅ Sessions calculated: {len(sessions_data)} session periods")
+            return sessions_data
 
         except Exception as e:
-            print(f"❌ Error calculating Sessions: {e}")
+            print(f"❌ Error in calculate_sessions: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
 
@@ -749,32 +921,41 @@ class SMCLineItem(pg.GraphicsObject):
         self.picture = None
 
     def generatePicture(self):
-        self.picture = QPicture()
-        painter = QPainter(self.picture)
+        """Generate picture for drawing lines"""
+        self.picture = pg.QtGui.QPicture()
+        painter = pg.QtGui.QPainter(self.picture)
 
-        # Set up pen style
-        pen_style = Qt.SolidLine
-        if self.style == 'dash':
-            pen_style = Qt.DashLine
-        elif self.style == 'dot':
-            pen_style = Qt.DotLine
-        elif self.style == 'dashdot':
-            pen_style = Qt.DashDotLine
+        # Set pen style
+        pen = pg.mkPen(color=self.color, width=self.width)
+        if hasattr(self, 'style') and self.style == 'dashed':
+            pen.setStyle(pg.QtCore.Qt.DashLine)
 
-        pen = pg.mkPen(color=self.color, width=self.width, style=pen_style)
         painter.setPen(pen)
 
         # Draw lines
         for line in self.lines:
-            x1, y1 = line['x1'], line['y1']
-            x2, y2 = line['x2'], line['y2']
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            # Handle tuple format: (x1, y1, x2, y2)
+            if isinstance(line, tuple) and len(line) >= 4:
+                x1, y1, x2, y2 = line
+            # Handle dictionary format: {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+            elif isinstance(line, dict):
+                x1, y1, x2, y2 = line['x1'], line['y1'], line['x2'], line['y2']
+            else:
+                print(f"⚠️ Unknown line format in generatePicture: {type(line)} - {line}")
+                continue
 
-        # Draw text labels
-        if self.text_labels:
-            painter.setPen(pg.mkPen(color='white', width=1))
+            painter.drawLine(pg.QtCore.QPointF(x1, y1), pg.QtCore.QPointF(x2, y2))
+
+        # Draw text labels if any
+        if hasattr(self, 'text_labels') and self.text_labels:
+            font = pg.QtGui.QFont()
+            font.setPixelSize(10)
+            painter.setFont(font)
+
             for label in self.text_labels:
-                painter.drawText(QPointF(label['x'], label['y']), label['text'])
+                if isinstance(label, tuple) and len(label) >= 3:
+                    x, y, text = label[0], label[1], label[2]
+                    painter.drawText(pg.QtCore.QPointF(x, y), str(text))
 
         painter.end()
 
@@ -784,19 +965,37 @@ class SMCLineItem(pg.GraphicsObject):
         painter.drawPicture(0, 0, self.picture)
 
     def boundingRect(self):
+        """Calculate bounding rectangle for all lines"""
         if not self.lines:
-            return QRectF()
+            return pg.QtCore.QRectF(0, 0, 1, 1)
 
         all_x = []
         all_y = []
+
         for line in self.lines:
-            all_x.extend([line['x1'], line['x2']])
-            all_y.extend([line['y1'], line['y2']])
+            # Handle tuple format: (x1, y1, x2, y2)
+            if isinstance(line, tuple) and len(line) >= 4:
+                x1, y1, x2, y2 = line
+                all_x.extend([x1, x2])
+                all_y.extend([y1, y2])
+            # Handle dictionary format: {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+            elif isinstance(line, dict):
+                all_x.extend([line['x1'], line['x2']])
+                all_y.extend([line['y1'], line['y2']])
+            else:
+                print(f"⚠️ Unknown line format in boundingRect: {type(line)} - {line}")
+                continue
+
+        if not all_x or not all_y:
+            return pg.QtCore.QRectF(0, 0, 1, 1)
 
         min_x, max_x = min(all_x), max(all_x)
         min_y, max_y = min(all_y), max(all_y)
 
-        return QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+        width = max_x - min_x if max_x != min_x else 1
+        height = max_y - min_y if max_y != min_y else 1
+
+        return pg.QtCore.QRectF(min_x, min_y, width, height)
 
 
 class TechnicalIndicatorPanel(QWidget):
@@ -811,17 +1010,22 @@ class TechnicalIndicatorPanel(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
 
         # Title
         title = QLabel("📈 Technical Indicators")
         title.setFont(QFont("Arial", 12, QFont.Bold))
-        title.setStyleSheet("color: #ffffff; padding: 5px; background-color: #2d3748;")
+        title.setStyleSheet("color: #ffffff; padding: 6px; background-color: #2d3748;")
         layout.addWidget(title)
 
         # Indicator table
         self.indicator_table = QTableWidget()
         self.indicator_table.setColumnCount(4)
         self.indicator_table.setHorizontalHeaderLabels(['Indicator', 'Period', 'Param2', 'Show'])
+        self.indicator_table.verticalHeader().setVisible(False)  # 👈 Ẩn mảng trắng góc trái
+        self.indicator_table.setFont(QFont("Arial", 10))         # 👈 Font chữ đồng bộ
+
         self.indicator_table.setStyleSheet("""
             QTableWidget {
                 background-color: #2d3748;
@@ -831,7 +1035,6 @@ class TechnicalIndicatorPanel(QWidget):
             }
             QTableWidget::item {
                 padding: 5px;
-                border-bottom: 1px solid #4a5568;
             }
             QHeaderView::section {
                 background-color: #1a202c;
@@ -840,6 +1043,7 @@ class TechnicalIndicatorPanel(QWidget):
                 border: 1px solid #4a5568;
             }
         """)
+        self.indicator_table.verticalHeader().setDefaultSectionSize(34)  # 👈 Tăng chiều cao dòng
 
         # Set column widths
         header = self.indicator_table.horizontalHeader()
@@ -851,7 +1055,7 @@ class TechnicalIndicatorPanel(QWidget):
         self.indicator_table.setColumnWidth(2, 60)
         self.indicator_table.setColumnWidth(3, 50)
 
-        # Add default indicators
+        # Default indicators
         default_indicators = [
             ("EMA", 20, "", True),
             ("EMA", 50, "", False),
@@ -888,7 +1092,6 @@ class TechnicalIndicatorPanel(QWidget):
         row = self.indicator_table.rowCount()
         self.indicator_table.insertRow(row)
 
-        # Indicator name
         indicator_combo = QComboBox()
         indicators = ['EMA', 'SMA', 'RSI', 'MACD', 'KDJ', 'Bollinger']
         if TALIB_AVAILABLE:
@@ -897,17 +1100,14 @@ class TechnicalIndicatorPanel(QWidget):
         indicator_combo.setCurrentText(name)
         self.indicator_table.setCellWidget(row, 0, indicator_combo)
 
-        # Period
         period_spin = QSpinBox()
         period_spin.setRange(1, 200)
         period_spin.setValue(period)
         self.indicator_table.setCellWidget(row, 1, period_spin)
 
-        # Param2
         param2_item = QTableWidgetItem(param2)
         self.indicator_table.setItem(row, 2, param2_item)
 
-        # Show checkbox
         show_check = QCheckBox()
         show_check.setChecked(show)
         self.indicator_table.setCellWidget(row, 3, show_check)
@@ -933,6 +1133,7 @@ class TechnicalIndicatorPanel(QWidget):
         """Emit indicator change signal"""
         indicators = self.get_active_indicators()
         self.indicator_changed.emit("update", {"indicators": indicators})
+
 
 
 class SMCPanel(QWidget):
@@ -1029,7 +1230,7 @@ class DataControlPanel(QWidget):
         symbol_layout.addWidget(QLabel("Symbol:"))
         self.symbol_combo = QComboBox()
         self.symbol_combo.addItems(['BTCUSDT.BINANCE', 'ETHUSDT.BINANCE', 'ADAUSDT.BINANCE'])
-        self.symbol_combo.setEditable(True)
+        self.symbol_combo.setEditable(False)
         self.symbol_combo.currentTextChanged.connect(self.emit_data_change)
         symbol_layout.addWidget(self.symbol_combo)
         layout.addLayout(symbol_layout)
@@ -1039,7 +1240,7 @@ class DataControlPanel(QWidget):
         timeframe_layout.addWidget(QLabel("Timeframe:"))
         self.timeframe_combo = QComboBox()
         self.timeframe_combo.addItems(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W', '1M'])
-        self.timeframe_combo.setCurrentText('1h')
+        self.timeframe_combo.setCurrentText('5m')
         self.timeframe_combo.currentTextChanged.connect(self.emit_data_change)
         timeframe_layout.addWidget(self.timeframe_combo)
         layout.addLayout(timeframe_layout)
@@ -1140,6 +1341,10 @@ class TradingChartView(QWidget):
         self.oscillator_plot.setLabel('left', 'Value')
         self.oscillator_plot.setXLink(self.price_plot)
 
+        self.graphics_widget.ci.layout.setRowStretchFactor(0, 7)  # Price chart - 70%
+        self.graphics_widget.ci.layout.setRowStretchFactor(1, 1.5)  # Volume - 15%
+        self.graphics_widget.ci.layout.setRowStretchFactor(2, 1.5)  # Oscillators - 15%
+
         layout.addWidget(self.graphics_widget)
         self.setLayout(layout)
 
@@ -1188,9 +1393,38 @@ class TradingChartView(QWidget):
 
         # Render volume
         volume_data = data[:, 4]  # Volume column
-        volume_bars = pg.BarGraphItem(x=x_axis, height=volume_data, width=0.8,
-                                      brush=pg.mkBrush(100, 149, 237, 100))
-        self.volume_plot.addItem(volume_bars)
+        open_prices = data[:, 0]  # Open column
+        close_prices = data[:, 3]  # Close column
+
+        # Create separate bars for green (bullish) and red (bearish) volumes
+        green_volumes = []
+        red_volumes = []
+        green_x = []
+        red_x = []
+
+        for i in range(len(volume_data)):
+            if close_prices[i] >= open_prices[i]:  # Bullish candle
+                green_volumes.append(volume_data[i])
+                green_x.append(i)
+                red_volumes.append(0)
+                red_x.append(i)
+            else:  # Bearish candle
+                red_volumes.append(volume_data[i])
+                red_x.append(i)
+                green_volumes.append(0)
+                green_x.append(i)
+
+        # Add green volume bars (bullish)
+        if green_volumes:
+            green_bars = pg.BarGraphItem(x=green_x, height=green_volumes, width=0.8,
+                                         brush=pg.mkBrush(34, 197, 94), pen=None)  # Green
+            self.volume_plot.addItem(green_bars)
+
+        # Add red volume bars (bearish)
+        if red_volumes:
+            red_bars = pg.BarGraphItem(x=red_x, height=red_volumes, width=0.8,
+                                       brush=pg.mkBrush(239, 68, 68), pen=None)# Red
+            self.volume_plot.addItem(red_bars)
 
         # Add trade marks AFTER rendering candlesticks
         self.add_trade_marks(x_axis)
@@ -1198,12 +1432,20 @@ class TradingChartView(QWidget):
         print(f"📊 Chart rendered with {len(data)} bars")
 
     def add_trade_marks(self, x_axis):
-        """Add entry/exit trade marks overlaid on price chart"""
+        """Add entry/exit trade marks with connecting lines - ENHANCED VERSION"""
         if not self.trades_data:
+            print("⚠️ No trades data available")
             return
 
-        entry_x, entry_y = [], []
-        exit_x, exit_y = [], []
+        print(f"🔍 Processing {len(self.trades_data)} trades...")
+
+        # Separate entry and exit trades
+        entry_trades = []
+        exit_trades = []
+
+        # Debug counters
+        processed_count = 0
+        skipped_count = 0
 
         # Process trades data efficiently
         for trade in self.trades_data:
@@ -1212,32 +1454,77 @@ class TradingChartView(QWidget):
                     action = trade.get('action', '')
                     price = trade.get('price', 0)
                     datetime_val = trade.get('datetime', None)
+                    direction = trade.get('direction', 'long')
                 elif hasattr(trade, 'action'):
                     action = trade.action
                     price = trade.price
                     datetime_val = trade.datetime
+                    direction = getattr(trade, 'direction', 'long')
                 else:
+                    skipped_count += 1
+                    continue
+
+                # Validate trade data
+                if not datetime_val or not price or not action:
+                    skipped_count += 1
                     continue
 
                 if datetime_val and self.data_manager.timestamps:
                     closest_index = self._find_closest_timestamp_index(datetime_val, self.data_manager.timestamps)
                     if closest_index is not None:
+                        trade_data = {
+                            'index': closest_index,
+                            'price': float(price),  # Ensure float
+                            'datetime': datetime_val,
+                            'direction': direction,
+                            'action': action
+                        }
+
                         if action == 'open':
-                            entry_x.append(closest_index)
-                            entry_y.append(price)
+                            entry_trades.append(trade_data)
                         elif action == 'close':
-                            exit_x.append(closest_index)
-                            exit_y.append(price)
+                            exit_trades.append(trade_data)
+
+                        processed_count += 1
+                    else:
+                        skipped_count += 1
 
             except Exception as e:
                 print(f"❌ Error processing trade: {e}")
+                skipped_count += 1
                 continue
+
+        print(f"✅ Processed: {processed_count}, Skipped: {skipped_count}")
+        print(f"📊 Entries: {len(entry_trades)}, Exits: {len(exit_trades)}")
+
+        # Group trades into entry-exit pairs
+        trade_pairs = self._group_trades_into_pairs(entry_trades, exit_trades)
+        print(f"🔗 Created {len(trade_pairs)} trade pairs")
+
+        # Draw marks and lines
+        entry_x, entry_y = [], []
+        exit_x, exit_y = [], []
+
+        for pair in trade_pairs:
+            entry = pair['entry']
+            exit_trade = pair['exit']
+
+            # Add entry mark
+            entry_x.append(entry['index'])
+            entry_y.append(entry['price'])
+
+            # Add exit mark
+            exit_x.append(exit_trade['index'])
+            exit_y.append(exit_trade['price'])
+
+            # Draw connecting line
+            self._draw_trade_connection_line(entry, exit_trade)
 
         # Add entry marks (green triangles pointing up)
         if entry_x:
             entry_scatter = pg.ScatterPlotItem(
                 x=entry_x, y=entry_y,
-                symbol='t', size=20, brush=pg.mkBrush(34, 197, 94), pen=pg.mkPen('white', width=2)
+                symbol='t', size=12, brush=pg.mkBrush(34, 197, 94), pen=pg.mkPen('white', width=2)
             )
             self.price_plot.addItem(entry_scatter)
 
@@ -1245,11 +1532,111 @@ class TradingChartView(QWidget):
         if exit_x:
             exit_scatter = pg.ScatterPlotItem(
                 x=exit_x, y=exit_y,
-                symbol='t1', size=20, brush=pg.mkBrush(239, 68, 68), pen=pg.mkPen('white', width=2)
+                symbol='t1', size=12, brush=pg.mkBrush(239, 68, 68), pen=pg.mkPen('white', width=2)
             )
             self.price_plot.addItem(exit_scatter)
 
-        print(f"📈 Added {len(entry_x)} entry marks and {len(exit_x)} exit marks to price chart")
+        print(
+            f"📈 Successfully added {len(entry_x)} entry marks, {len(exit_x)} exit marks, and {len(trade_pairs)} connecting lines")
+
+    def _group_trades_into_pairs(self, entry_trades, exit_trades):
+        """Group entry and exit trades into pairs - ENHANCED with direction matching"""
+        pairs = []
+
+        # Sort trades by datetime
+        entry_trades.sort(key=lambda x: x['datetime'])
+        exit_trades.sort(key=lambda x: x['datetime'])
+
+        # Track used exits
+        used_exits = set()
+
+        for entry in entry_trades:
+            best_exit = None
+            best_exit_idx = None
+
+            # Find the FIRST exit after this entry with SAME direction
+            for idx, exit_trade in enumerate(exit_trades):
+                if (idx not in used_exits and
+                        exit_trade['datetime'] > entry['datetime'] and
+                        exit_trade['direction'] == entry['direction']):  # ✅ Same direction check
+                    best_exit = exit_trade
+                    best_exit_idx = idx
+                    break
+
+            if best_exit:
+                pairs.append({
+                    'entry': entry,
+                    'exit': best_exit
+                })
+                used_exits.add(best_exit_idx)
+
+                # Debug log for verification
+                direction = entry['direction']
+                entry_price = entry['price']
+                exit_price = best_exit['price']
+
+                if direction == 'long':
+                    pnl = exit_price - entry_price
+                else:
+                    pnl = entry_price - exit_price
+
+                print(f"📊 Pair: {direction} | Entry: {entry_price} | Exit: {exit_price} | P&L: {pnl:+.2f}")
+
+        return pairs
+
+    def _draw_trade_connection_line(self, entry, exit_trade):
+        """Draw a line connecting entry and exit positions - CORRECTED P&L LOGIC"""
+
+        entry_price = float(entry['price'])
+        exit_price = float(exit_trade['price'])
+        direction = entry['direction']
+
+        # ✅ CORRECT P&L calculation based on trade direction
+        if direction == 'long':
+            # Long trade: Buy low, sell high
+            # Profit when exit_price > entry_price
+            pnl = exit_price - entry_price
+            is_profit = pnl > 0
+        else:  # direction == 'short'
+            # Short trade: Sell high, buy low
+            # Profit when entry_price > exit_price (sell high, cover low)
+            pnl = entry_price - exit_price
+            is_profit = pnl > 0
+
+        # Determine line color based on actual profit/loss
+        if is_profit:
+            line_color = pg.mkPen(color=(34, 197, 94), width=2, style=pg.QtCore.Qt.DashLine)  # Green
+            text_color = (34, 197, 94)
+        else:
+            line_color = pg.mkPen(color=(239, 68, 68), width=2, style=pg.QtCore.Qt.DashLine)  # Red
+            text_color = (239, 68, 68)
+
+        # Create line item
+        line = pg.PlotDataItem(
+            x=[entry['index'], exit_trade['index']],
+            y=[entry_price, exit_price],
+            pen=line_color
+        )
+        self.price_plot.addItem(line)
+
+        # Add P&L text with correct calculation
+        mid_x = (entry['index'] + exit_trade['index']) / 2
+        mid_y = (entry_price + exit_price) / 2
+
+        # Format P&L text with direction indicator
+        direction_symbol = "🔼" if direction == 'long' else "🔽"
+        pnl_text = f"{direction_symbol} {pnl:+.2f}"
+
+        # Create text item with profit/loss color
+        text_item = pg.TextItem(
+            text=pnl_text,
+            color=text_color,
+            fill=(0, 0, 0, 150),
+            border=text_color,
+            anchor=(0.5, 0.5)
+        )
+        text_item.setPos(mid_x, mid_y)
+        self.price_plot.addItem(text_item)
 
     def _find_closest_timestamp_index(self, target_datetime, timestamps_list):
         """Find the closest timestamp index for trade marking"""
@@ -1830,40 +2217,62 @@ class TradingChartView(QWidget):
             print(f"❌ Error adding Previous H/L: {e}")
 
     def display_prev_hl(self, prev_hl_data, data_len):
-        """Professional Previous H/L display matching testa.py style"""
-        lines = []
+        """Market-realistic Previous H/L display using SMCLineItem"""
+        if not prev_hl_data:
+            return
 
-        for prev_hl in prev_hl_data:
-            if isinstance(prev_hl, dict):
-                idx = prev_hl.get('index', 0)
-                price = prev_hl.get('price', 0)
-                hl_type = prev_hl.get('type', 'PrevHL')
+        # Separate lines by type for better organization
+        high_lines = []
+        low_lines = []
+        high_labels = []
+        low_labels = []
 
-                # Create horizontal line spanning multiple bars
-                x_start = max(0, idx - 10)
-                x_end = min(data_len - 1, idx + 30)
+        for line_data in prev_hl_data:
+            start_idx = line_data['start_index']
+            end_idx = line_data['end_index']
+            price = line_data['price']
+            line_type = line_data['type']
 
-                lines.append({
-                    'x1': x_start,
-                    'y1': price,
-                    'x2': x_end,
-                    'y2': price,
-                    'type': hl_type
-                })
+            # Ensure indices are within bounds
+            start_idx = max(0, min(start_idx, data_len - 1))
+            end_idx = max(0, min(end_idx, data_len - 1))
 
-        if lines:
-            # Use custom SMCLineItem with appropriate colors
-            color = '#9932CC' if 'High' in str(lines[0].get('type', '')) else '#32CD32'
-            smc_item = SMCLineItem(
-                lines,
-                color=color,
+            # Create line tuple in SMCLineItem format: (x1, y1, x2, y2)
+            line_tuple = (start_idx, price, end_idx, price)
+
+            if line_type == 'PreviousHigh':
+                high_lines.append(line_tuple)
+                # Add text label at the end of the line
+                high_labels.append((end_idx, price, "PH"))
+            elif line_type == 'PreviousLow':
+                low_lines.append(line_tuple)
+                # Add text label at the end of the line
+                low_labels.append((end_idx, price, "PL"))
+
+        # Create separate SMCLineItem for highs and lows with different colors
+        if high_lines:
+            high_item = SMCLineItem(
+                lines=high_lines,
+                color='#FF6B6B',  # Red for previous highs
                 width=2,
-                style='dashed',
-                text_labels=[f"P{line.get('type', '')}" for line in lines]
+                style='solid',
+                text_labels=high_labels
             )
-            self.price_plot.addItem(smc_item)
-            self.smc_items.append(smc_item)
-            print(f"💰 Added {len(lines)} Previous H/L lines")
+            self.price_plot.addItem(high_item)
+            self.smc_items.append(high_item)
+            print(f"💰 Added {len(high_lines)} Previous High lines")
+
+        if low_lines:
+            low_item = SMCLineItem(
+                lines=low_lines,
+                color='#4ECDC4',  # Teal for previous lows
+                width=2,
+                style='solid',
+                text_labels=low_labels
+            )
+            self.price_plot.addItem(low_item)
+            self.smc_items.append(low_item)
+            print(f"💰 Added {len(low_lines)} Previous Low lines")
 
 
     def add_sessions(self):
@@ -1881,71 +2290,70 @@ class TradingChartView(QWidget):
         except Exception as e:
             print(f"❌ Error adding Sessions: {e}")
 
-    def display_sessions(self, sessions_data, data_len):
-        """Professional Sessions display matching testa.py style"""
-        rectangles = []
+    def display_sessions(self, session_data, data_len):
+        """🎨 Display trading sessions with enhanced visual style (PySide6-compatible)"""
+        try:
+            print(f"🎨 Displaying {len(session_data)} enhanced sessions...")
 
-        # Group sessions by type for better visualization
-        session_groups = {}
-        for session in sessions_data:
-            if isinstance(session, dict):
-                session_type = session.get('session', 'Unknown')
-                if session_type not in session_groups:
-                    session_groups[session_type] = []
-                session_groups[session_type].append(session)
+            if not session_data:
+                print("⚠️ No session data to display")
+                return
 
-        # Create rectangles for each session group
-        for session_type, sessions in session_groups.items():
-            if not sessions:
-                continue
+            # Create rectangles for each session
+            rectangles = []
+            for session in session_data:
+                if isinstance(session, dict):
+                    start_idx = session.get('start_index', 0)
+                    end_idx = session.get('end_index', 0)
+                    high = session.get('high', 0)
+                    low = session.get('low', 0)
+                    session_name = session.get('session', 'Unknown')
 
-            # Find session boundaries
-            start_idx = min(s.get('index', 0) for s in sessions)
-            end_idx = max(s.get('index', 0) for s in sessions)
+                    width = max(1, end_idx - start_idx)
+                    height = abs(high - low)
 
-            if end_idx - start_idx < 5:  # Minimum session width
-                end_idx = start_idx + 10
+                    rectangles.append({
+                        'x': start_idx,
+                        'y': low,
+                        'width': width,
+                        'height': height,
+                        'text': session_name
+                    })
 
-            # Get price range for the session
-            prices = [s.get('price', 0) for s in sessions if s.get('price', 0) > 0]
-            if prices:
-                session_high = max(prices) * 1.002  # Slight padding
-                session_low = min(prices) * 0.998
-            else:
-                # Fallback to a default range
-                session_high = 100
-                session_low = 90
+            if rectangles:
+                # Define session colors (RGBA)
+                color_map = {
+                    'Tokyo': (255, 193, 7, 60),  # Amber
+                    'London': (33, 150, 243, 60),  # Blue
+                    'New York': (76, 175, 80, 60)  # Green
+                }
 
-            rectangles.append({
-                'x': start_idx,
-                'y': session_low,
-                'width': end_idx - start_idx,
-                'height': session_high - session_low,
-                'type': session_type
-            })
+                # Duyệt từng phiên, gom lại theo session_name nếu cần sau này
+                for session_name in ['Tokyo', 'London', 'New York']:
+                    # Lọc các hình chữ nhật thuộc phiên này
+                    session_rects = [r for r in rectangles if r.get('text') == session_name]
+                    if not session_rects:
+                        continue
 
-        if rectangles:
-            # Use different colors for different session types
-            session_colors = {
-                'AsianSession': '#4169E1',
-                'LondonSession': '#DC143C',
-                'NewYorkSession': '#228B22',
-                'Session': '#9932CC'
-            }
+                    rgba = color_map.get(session_name, (255, 255, 255, 60))  # Default: white semi-transparent
+                    color = QColor(*rgba[:3])
+                    color.setAlpha(rgba[3])
 
-            # Get color based on session type
-            first_type = rectangles[0].get('type', 'Session')
-            color = session_colors.get(first_type, '#808080')
+                    smc_item = SMCRectangleItem(
+                        rectangles=session_rects,
+                        color=color,
+                        opacity=rgba[3] / 255.0,
+                        text_overlay=True
+                    )
 
-            smc_item = SMCRectangleItem(
-                rectangles,
-                color=color,
-                opacity=0.15,
-                text_overlay=f"SESSION"
-            )
-            self.price_plot.addItem(smc_item)
-            self.smc_items.append(smc_item)
-            print(f"💰 Added {len(rectangles)} Session rectangles")
+                    self.price_plot.addItem(smc_item)
+
+                print(f"✅ Enhanced sessions displayed: {len(rectangles)} session periods")
+
+        except Exception as e:
+            print(f"❌ Error in enhanced display_sessions: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 class AdvancedTradingWidget(QWidget):
