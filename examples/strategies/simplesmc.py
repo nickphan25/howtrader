@@ -26,7 +26,7 @@ class SMCBasic(CtaTemplate):
     author = "Pan"
 
     # Strategy parameters
-    fixed_size = 1
+    fixed_size = 10
     swing_length = 5  # Reduced for more sensitivity
     min_bars_for_structure = 20  # Reduced requirement
 

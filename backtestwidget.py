@@ -1,6 +1,7 @@
 """
 🔗 Integration example for Advanced Trading Widget
 """
+from examples.strategies.LongShortBalancedStrategy import LongShortBalancedStrategy
 from howtrader.trader.object import Interval
 from datetime import datetime
 import pandas as pd
@@ -13,9 +14,9 @@ from howtrader.app.cta_strategy.backtesting import BacktestingEngine
 from PySide6.QtWidgets import QApplication
 # from examples.strategies.atr_rsi_15min_strategy import  AtrRsi15MinStrategy  # 要导入你回测的策略，你自己开发的。
 # from examples.strategies.simplesmc import SMCBasic
-from examples.strategies.fixed_trade_time_strategy import FixedTradeTimeStrategy
-
-
+# from examples.strategies.fixed_trade_time_strategy import FixedTradeTimeStrategy
+# from examples.strategies.LongShortBalancedStrategy import LongShortBalancedStrategy
+from examples.strategies.SMCSWING import PureSMCStrategy
 # Global application instance
 app = None
 
@@ -110,39 +111,53 @@ class BacktestingEngineExtended(BacktestingEngine):
             return pd.DataFrame()
 
     def _prepare_trades_data(self):
-        """🔥 Prepare trades data for widget - Fixed to handle dictionary structure"""
+        """🔥 Prepare trades data for widget - CLEAN VERSION"""
         trades_data = []
 
-        # self.trades is a Dict[str, TradeData], so we need to iterate over values
-        print(f"🔍 Processing {len(self.trades)} trade records...")
-        
         try:
             for trade_id, trade in self.trades.items():
                 try:
-                    # Check if trade object has the expected attributes
                     if not hasattr(trade, 'datetime'):
-                        print(f"⚠️ Trade {trade_id} missing datetime attribute")
                         continue
-                        
-                    # Convert Decimal to float for JSON serialization
+
+                    direction_value = trade.direction.value
+                    offset_value = trade.offset.value
+
+                    # Map direction and action correctly
+                    if direction_value == 'Long' and offset_value == 'OPEN':
+                        trade_direction = 'long'
+                        action = 'open'
+                    elif direction_value == 'Short' and offset_value == 'CLOSE':
+                        trade_direction = 'long'  # This is closing a LONG position
+                        action = 'close'
+                    elif direction_value == 'Short' and offset_value == 'OPEN':
+                        trade_direction = 'short'  # Opening a short position
+                        action = 'open'
+                    elif direction_value == 'Long' and offset_value == 'CLOSE':
+                        trade_direction = 'short'  # Closing a short position
+                        action = 'close'
+                    else:
+                        # Fallback for any other combinations
+                        trade_direction = 'long' if direction_value == 'Long' else 'short'
+                        action = 'open' if offset_value == 'OPEN' else 'close'
+
                     trade_data = {
                         'datetime': trade.datetime,
-                        'price': float(trade.price),  # Convert Decimal to float
-                        'volume': float(trade.volume),  # Convert Decimal to float
-                        'direction': 'long' if trade.direction.value == 'LONG' else 'short',
-                        'action': 'open' if trade.offset.value == 'OPEN' else 'close',
-                        'pnl': 0.0,  # Basic PnL calculation could be added here
-                        'trade_id': trade_id  # Add trade ID for reference
+                        'price': float(trade.price),
+                        'volume': float(trade.volume),
+                        'direction': trade_direction,
+                        'action': action,
+                        'pnl': 0.0,
+                        'trade_id': trade_id
                     }
                     trades_data.append(trade_data)
-                    
+
                 except Exception as e:
-                    print(f"⚠️ Error processing trade {trade_id}: {e}")
                     continue
 
             print(f"📈 Prepared {len(trades_data)} trades for widget display")
             return trades_data
-            
+
         except Exception as e:
             print(f"❌ Error preparing trades data: {e}")
             return []
@@ -157,18 +172,18 @@ def run_backtest_with_widget():
     engine.set_parameters(
         vt_symbol="BTCUSDT.BINANCE",
         interval=Interval.MINUTE,
-        start=datetime(2025, 3, 1),
+        start=datetime(2025, 1, 1),
         end=datetime(2025, 4, 30),
         rate=4 / 10000,
         slippage=0,
         size=1,
         pricetick=0.01,
-        capital=100000,
+        capital=10000,
     )
 
     # engine.add_strategy(AtrRsi15MinStrategy, {})
-    engine.add_strategy(FixedTradeTimeStrategy, {})
-    
+    # engine.add_strategy(FixedTradeTimeStrategy, {})
+    engine.add_strategy(PureSMCStrategy, {})
     print("📊 Loading data...")
     engine.load_data()
     

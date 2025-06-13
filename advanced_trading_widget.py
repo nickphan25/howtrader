@@ -1432,7 +1432,7 @@ class TradingChartView(QWidget):
         print(f"📊 Chart rendered with {len(data)} bars")
 
     def add_trade_marks(self, x_axis):
-        """Add entry/exit trade marks with connecting lines - ENHANCED VERSION"""
+        """Add entry/exit trade marks with connecting lines - SIMPLIFIED VERSION"""
         if not self.trades_data:
             print("⚠️ No trades data available")
             return
@@ -1443,41 +1443,54 @@ class TradingChartView(QWidget):
         entry_trades = []
         exit_trades = []
 
-        # Debug counters
-        processed_count = 0
-        skipped_count = 0
-
         # Process trades data efficiently
-        for trade in self.trades_data:
+        for i, trade in enumerate(self.trades_data):
             try:
+                # Handle different trade data formats
                 if isinstance(trade, dict):
                     action = trade.get('action', '')
                     price = trade.get('price', 0)
+                    volume = trade.get('volume', 0)
                     datetime_val = trade.get('datetime', None)
                     direction = trade.get('direction', 'long')
-                elif hasattr(trade, 'action'):
-                    action = trade.action
-                    price = trade.price
-                    datetime_val = trade.datetime
-                    direction = getattr(trade, 'direction', 'long')
+                    pnl = trade.get('pnl', 0.0)
+                    trade_id = trade.get('trade_id', f"trade_{i}")
+                    position_type = direction  # Use the direction directly from backtestwidget.py
+
                 else:
-                    skipped_count += 1
+                    # Raw trade objects (backup handling)
+                    if hasattr(trade, 'datetime') and hasattr(trade, 'price'):
+                        direction = getattr(trade, 'direction', 'long')
+                        action = getattr(trade, 'action', 'open')
+                        position_type = direction
+                        price = float(trade.price)
+                        volume = float(trade.volume)
+                        datetime_val = trade.datetime
+                        pnl = 0.0
+                        trade_id = getattr(trade, 'tradeid', f"trade_{i}")
+                    else:
+                        print(f"⚠️ Skipping invalid trade object: {type(trade)}")
+                        continue
+
+                # Validate essential trade data
+                if not datetime_val or not price or not action or not volume:
+                    print(f"⚠️ Skipping trade: missing data")
                     continue
 
-                # Validate trade data
-                if not datetime_val or not price or not action:
-                    skipped_count += 1
-                    continue
-
+                # Find closest timestamp index
                 if datetime_val and self.data_manager.timestamps:
                     closest_index = self._find_closest_timestamp_index(datetime_val, self.data_manager.timestamps)
                     if closest_index is not None:
                         trade_data = {
                             'index': closest_index,
-                            'price': float(price),  # Ensure float
+                            'price': float(price),
+                            'volume': float(volume),
                             'datetime': datetime_val,
                             'direction': direction,
-                            'action': action
+                            'action': action,
+                            'pnl': float(pnl) if pnl else 0.0,
+                            'trade_id': trade_id,
+                            'position_type': position_type
                         }
 
                         if action == 'open':
@@ -1485,158 +1498,383 @@ class TradingChartView(QWidget):
                         elif action == 'close':
                             exit_trades.append(trade_data)
 
-                        processed_count += 1
-                    else:
-                        skipped_count += 1
-
             except Exception as e:
                 print(f"❌ Error processing trade: {e}")
-                skipped_count += 1
                 continue
 
-        print(f"✅ Processed: {processed_count}, Skipped: {skipped_count}")
-        print(f"📊 Entries: {len(entry_trades)}, Exits: {len(exit_trades)}")
-
-        # Group trades into entry-exit pairs
-        trade_pairs = self._group_trades_into_pairs(entry_trades, exit_trades)
+        # Group trades into entry-exit pairs with volume matching
+        trade_pairs, unmatched_entries, unmatched_exits = self._group_trades_into_pairs(entry_trades, exit_trades)
         print(f"🔗 Created {len(trade_pairs)} trade pairs")
 
-        # Draw marks and lines
-        entry_x, entry_y = [], []
-        exit_x, exit_y = [], []
-
+        # Draw marks and lines for matched pairs
         for pair in trade_pairs:
             entry = pair['entry']
             exit_trade = pair['exit']
+            position_type = pair['position_type']
+
+            # Direction-based coloring for entry marks
+            if position_type == 'long':
+                entry_color = pg.mkBrush(34, 197, 94)  # Green for long entry
+                exit_color = pg.mkBrush(239, 68, 68)  # Red for long exit
+                entry_symbol = 't'  # Triangle up for long entry
+                exit_symbol = 't1'  # Triangle down for long exit
+            else:  # short
+                entry_color = pg.mkBrush(239, 68, 68)  # Red for short entry
+                exit_color = pg.mkBrush(34, 197, 94)  # Green for short exit
+                entry_symbol = 't1'  # Triangle down for short entry
+                exit_symbol = 't'  # Triangle up for short exit
 
             # Add entry mark
-            entry_x.append(entry['index'])
-            entry_y.append(entry['price'])
-
-            # Add exit mark
-            exit_x.append(exit_trade['index'])
-            exit_y.append(exit_trade['price'])
-
-            # Draw connecting line
-            self._draw_trade_connection_line(entry, exit_trade)
-
-        # Add entry marks (green triangles pointing up)
-        if entry_x:
             entry_scatter = pg.ScatterPlotItem(
-                x=entry_x, y=entry_y,
-                symbol='t', size=12, brush=pg.mkBrush(34, 197, 94), pen=pg.mkPen('white', width=2)
+                x=[entry['index']], y=[entry['price']],
+                symbol=entry_symbol, size=15, brush=entry_color, pen=pg.mkPen('white', width=2)
             )
             self.price_plot.addItem(entry_scatter)
 
-        # Add exit marks (red triangles pointing down)
-        if exit_x:
+            # Add exit mark
             exit_scatter = pg.ScatterPlotItem(
-                x=exit_x, y=exit_y,
-                symbol='t1', size=12, brush=pg.mkBrush(239, 68, 68), pen=pg.mkPen('white', width=2)
+                x=[exit_trade['index']], y=[exit_trade['price']],
+                symbol=exit_symbol, size=15, brush=exit_color, pen=pg.mkPen('white', width=2)
             )
             self.price_plot.addItem(exit_scatter)
 
-        print(
-            f"📈 Successfully added {len(entry_x)} entry marks, {len(exit_x)} exit marks, and {len(trade_pairs)} connecting lines")
+            # Draw connecting line with PnL information
+            self._draw_trade_connection_line(entry, exit_trade, pair)
+
+        # Draw marks for unmatched trades
+        self._draw_unmatched_trades(unmatched_entries, unmatched_exits)
 
     def _group_trades_into_pairs(self, entry_trades, exit_trades):
-        """Group entry and exit trades into pairs - ENHANCED with direction matching"""
-        pairs = []
+        """
+        🔥 FINAL CORRECTED: Match trades by same direction AND chronological order
+        """
+        from decimal import Decimal
 
-        # Sort trades by datetime
-        entry_trades.sort(key=lambda x: x['datetime'])
-        exit_trades.sort(key=lambda x: x['datetime'])
+        def validate_trade(trade, trade_type):
+            """Validate trade data and return True if valid."""
+            required_fields = ['direction', 'price', 'volume', 'datetime', 'index']
 
-        # Track used exits
-        used_exits = set()
+            for field in required_fields:
+                if field not in trade or trade[field] is None:
+                    print(f"⚠️ Skipping {trade_type} trade: missing {field}")
+                    return False
 
-        for entry in entry_trades:
-            best_exit = None
-            best_exit_idx = None
+            try:
+                price = Decimal(str(trade['price']))
+                volume = Decimal(str(trade['volume']))
 
-            # Find the FIRST exit after this entry with SAME direction
-            for idx, exit_trade in enumerate(exit_trades):
-                if (idx not in used_exits and
-                        exit_trade['datetime'] > entry['datetime'] and
-                        exit_trade['direction'] == entry['direction']):  # ✅ Same direction check
-                    best_exit = exit_trade
-                    best_exit_idx = idx
+                if price <= 0 or volume <= 0:
+                    print(f"⚠️ Skipping {trade_type} trade: invalid price({price}) or volume({volume})")
+                    return False
+
+                if trade['direction'] not in ['long', 'short']:
+                    print(f"⚠️ Skipping {trade_type} trade: invalid direction({trade['direction']})")
+                    return False
+
+            except (ValueError, TypeError) as e:
+                print(f"⚠️ Skipping {trade_type} trade: data conversion error - {e}")
+                return False
+
+            return True
+
+        def calculate_pnl(entry_price, exit_price, volume, position_type):
+            """Calculate PnL based on position type."""
+            if position_type == 'long':
+                return (exit_price - entry_price) * volume
+            else:  # short
+                return (entry_price - exit_price) * volume
+
+        def can_match_trades(entry, exit_trade):
+            """🎯 FINAL FIX: Match trades with SAME direction (same position)."""
+            # Entry and exit should have same direction for same position
+            return entry['direction'] == exit_trade['direction']
+
+        # Filter and validate trades
+        valid_entries = []
+        valid_exits = []
+
+        for i, trade in enumerate(entry_trades):
+            if validate_trade(trade, f"entry[{i}]"):
+                trade_copy = trade.copy()
+                trade_copy['remaining_volume'] = Decimal(str(trade['volume']))
+                trade_copy['original_volume'] = Decimal(str(trade['volume']))
+                valid_entries.append(trade_copy)
+
+        for i, trade in enumerate(exit_trades):
+            if validate_trade(trade, f"exit[{i}]"):
+                trade_copy = trade.copy()
+                trade_copy['remaining_volume'] = Decimal(str(trade['volume']))
+                trade_copy['original_volume'] = Decimal(str(trade['volume']))
+                valid_exits.append(trade_copy)
+
+        print(f"✅ Valid trades: {len(valid_entries)} entries, {len(valid_exits)} exits")
+
+        # Sort by datetime for chronological matching
+        valid_entries.sort(key=lambda x: x['datetime'])
+        valid_exits.sort(key=lambda x: x['datetime'])
+
+        # Initialize result containers
+        trade_pairs = []
+        matched_exit_indices = set()
+
+
+        for entry_idx, entry in enumerate(valid_entries):
+            entry_remaining = entry['remaining_volume']
+            position_type = entry.get('position_type', entry['direction'])
+
+            # Find matching exits for this entry
+            for exit_idx, exit_trade in enumerate(valid_exits):
+                # Skip already fully matched exits
+                if exit_idx in matched_exit_indices:
+                    continue
+
+                # Check chronological order (exit must be after entry)
+                if exit_trade['datetime'] <= entry['datetime']:
+                    continue
+
+                # 🎯 NEW LOGIC: Check if trades can be matched (same direction)
+                if not can_match_trades(entry, exit_trade):
+                    continue
+
+                # Check if exit has remaining volume
+                if exit_trade['remaining_volume'] <= 0:
+                    continue
+
+                # Calculate volumes to match
+                exit_remaining = exit_trade['remaining_volume']
+                volume_to_match = min(entry_remaining, exit_remaining)
+
+
+                # Create trade pair
+                entry_price = Decimal(str(entry['price']))
+                exit_price = Decimal(str(exit_trade['price']))
+
+                pnl = calculate_pnl(entry_price, exit_price, volume_to_match, position_type)
+                duration = exit_trade['datetime'] - entry['datetime']
+
+                trade_pair = {
+                    'entry': {
+                        'datetime': entry['datetime'],
+                        'price': float(entry_price),
+                        'volume': float(volume_to_match),
+                        'direction': entry['direction'],
+                        'index': entry['index'],
+                        'trade_id': entry.get('trade_id', 'unknown')
+                    },
+                    'exit': {
+                        'datetime': exit_trade['datetime'],
+                        'price': float(exit_price),
+                        'volume': float(volume_to_match),
+                        'direction': exit_trade['direction'],
+                        'index': exit_trade['index'],
+                        'trade_id': exit_trade.get('trade_id', 'unknown')
+                    },
+                    'pnl': float(pnl),
+                    'position_type': position_type,
+                    'duration': duration,
+                    'volume_matched': float(volume_to_match)
+                }
+
+                trade_pairs.append(trade_pair)
+
+                # Update remaining volumes
+                entry['remaining_volume'] -= volume_to_match
+                exit_trade['remaining_volume'] -= volume_to_match
+                entry_remaining -= volume_to_match
+
+                # Mark exit as fully matched if no remaining volume
+                if exit_trade['remaining_volume'] <= 0:
+                    matched_exit_indices.add(exit_idx)
+
+                # Break if entry is fully matched
+                if entry_remaining <= 0:
                     break
 
-            if best_exit:
-                pairs.append({
-                    'entry': entry,
-                    'exit': best_exit
-                })
-                used_exits.add(best_exit_idx)
+        # Collect unmatched trades
+        unmatched_entries = []
+        unmatched_exits = []
 
-                # Debug log for verification
-                direction = entry['direction']
-                entry_price = entry['price']
-                exit_price = best_exit['price']
+        for entry in valid_entries:
+            if entry['remaining_volume'] > 0:
+                unmatched_entry = {
+                    'datetime': entry['datetime'],
+                    'price': float(entry['price']),
+                    'volume': float(entry['remaining_volume']),
+                    'original_volume': float(entry['original_volume']),
+                    'direction': entry['direction'],
+                    'index': entry['index'],
+                    'status': 'partial' if entry['remaining_volume'] < entry['original_volume'] else 'unmatched'
+                }
+                unmatched_entries.append(unmatched_entry)
 
-                if direction == 'long':
-                    pnl = exit_price - entry_price
-                else:
-                    pnl = entry_price - exit_price
+        for exit_trade in valid_exits:
+            if exit_trade['remaining_volume'] > 0:
+                unmatched_exit = {
+                    'datetime': exit_trade['datetime'],
+                    'price': float(exit_trade['price']),
+                    'volume': float(exit_trade['remaining_volume']),
+                    'original_volume': float(exit_trade['original_volume']),
+                    'direction': exit_trade['direction'],
+                    'index': exit_trade['index'],
+                    'status': 'partial' if exit_trade['remaining_volume'] < exit_trade[
+                        'original_volume'] else 'unmatched'
+                }
+                unmatched_exits.append(unmatched_exit)
 
-                print(f"📊 Pair: {direction} | Entry: {entry_price} | Exit: {exit_price} | P&L: {pnl:+.2f}")
+        # Summary statistics
+        total_matched_volume = sum(pair['volume_matched'] for pair in trade_pairs)
+        total_pnl = sum(pair['pnl'] for pair in trade_pairs)
+        profitable_pairs = sum(1 for pair in trade_pairs if pair['pnl'] > 0)
 
-        return pairs
+        print(f"\n📊 === PAIRING SUMMARY ===")
+        print(f"✅ Total pairs created: {len(trade_pairs)}")
+        if trade_pairs:
+            print(
+                f"📈 Profitable pairs: {profitable_pairs}/{len(trade_pairs)} ({profitable_pairs / len(trade_pairs) * 100:.1f}%)")
+            print(f"💰 Total PnL: {total_pnl:+.4f}")
+            print(f"📊 Total matched volume: {total_matched_volume}")
+        print(f"⚠️ Unmatched entries: {len(unmatched_entries)}")
+        print(f"⚠️ Unmatched exits: {len(unmatched_exits)}")
 
-    def _draw_trade_connection_line(self, entry, exit_trade):
-        """Draw a line connecting entry and exit positions - CORRECTED P&L LOGIC"""
+        return trade_pairs, unmatched_entries, unmatched_exits
 
-        entry_price = float(entry['price'])
-        exit_price = float(exit_trade['price'])
-        direction = entry['direction']
+    def _draw_trade_connection_line(self, entry, exit_trade, pair):
+        """Draw connection line between entry and exit with PnL display and position info"""
+        try:
+            entry_x = entry['index']
+            entry_y = entry['price']
+            exit_x = exit_trade['index']
+            exit_y = exit_trade['price']
 
-        # ✅ CORRECT P&L calculation based on trade direction
-        if direction == 'long':
-            # Long trade: Buy low, sell high
-            # Profit when exit_price > entry_price
-            pnl = exit_price - entry_price
-            is_profit = pnl > 0
-        else:  # direction == 'short'
-            # Short trade: Sell high, buy low
-            # Profit when entry_price > exit_price (sell high, cover low)
-            pnl = entry_price - exit_price
-            is_profit = pnl > 0
+            pnl = pair['pnl']
+            position_type = pair['position_type']
+            volume = pair['volume_matched']
+            duration = pair['duration']
 
-        # Determine line color based on actual profit/loss
-        if is_profit:
-            line_color = pg.mkPen(color=(34, 197, 94), width=2, style=pg.QtCore.Qt.DashLine)  # Green
-            text_color = (34, 197, 94)
-        else:
-            line_color = pg.mkPen(color=(239, 68, 68), width=2, style=pg.QtCore.Qt.DashLine)  # Red
-            text_color = (239, 68, 68)
+            # 🔧 FIXED: Use Qt.PenStyle instead of integer for pen style
+            from PySide6.QtCore import Qt
 
-        # Create line item
-        line = pg.PlotDataItem(
-            x=[entry['index'], exit_trade['index']],
-            y=[entry_price, exit_price],
-            pen=line_color
-        )
-        self.price_plot.addItem(line)
+            # PnL-based line styling
+            if pnl > 0:
+                line_color = pg.mkPen(color=(34, 197, 94), width=3, style=Qt.PenStyle.SolidLine)  # Green for profit
+                pnl_color = (34, 197, 94)
+            elif pnl < 0:
+                line_color = pg.mkPen(color=(239, 68, 68), width=3, style=Qt.PenStyle.SolidLine)  # Red for loss
+                pnl_color = (239, 68, 68)
+            else:
+                line_color = pg.mkPen(color=(156, 163, 175), width=2, style=Qt.PenStyle.DashLine)  # Gray for breakeven
+                pnl_color = (156, 163, 175)
 
-        # Add P&L text with correct calculation
-        mid_x = (entry['index'] + exit_trade['index']) / 2
-        mid_y = (entry_price + exit_price) / 2
+            # Draw the connection line
+            line = pg.PlotDataItem(
+                x=[entry_x, exit_x],
+                y=[entry_y, exit_y],
+                pen=line_color,
+                connect='all'
+            )
+            self.price_plot.addItem(line)
 
-        # Format P&L text with direction indicator
-        direction_symbol = "🔼" if direction == 'long' else "🔽"
-        pnl_text = f"{direction_symbol} {pnl:+.2f}"
+            # Calculate midpoint for text placement
+            mid_x = (entry_x + exit_x) / 2
+            mid_y = (entry_y + exit_y) / 2
 
-        # Create text item with profit/loss color
-        text_item = pg.TextItem(
-            text=pnl_text,
-            color=text_color,
-            fill=(0, 0, 0, 150),
-            border=text_color,
-            anchor=(0.5, 0.5)
-        )
-        text_item.setPos(mid_x, mid_y)
-        self.price_plot.addItem(text_item)
+            # Create comprehensive PnL text with position info
+            position_symbol = "🔵" if position_type == 'long' else "🔴"
+            duration_str = f"{duration.total_seconds() / 3600:.1f}h" if duration.total_seconds() < 86400 else f"{duration.days}d"
+
+            # Multi-line text with position info
+            pnl_text = f"{position_symbol} {position_type.upper()}\n"
+            pnl_text += f"PnL: {pnl:+.4f}\n"
+            pnl_text += f"Vol: {volume:.4f}\n"
+            pnl_text += f"⏱ {duration_str}"
+
+            # Add text item for PnL display
+            text_item = pg.TextItem(
+                text=pnl_text,
+                color=pnl_color,
+                anchor=(0.5, 0.5),
+                border=pg.mkPen(color=(255, 255, 255), width=1),
+                fill=pg.mkBrush(color=(0, 0, 0, 180))  # Semi-transparent background
+            )
+            text_item.setPos(mid_x, mid_y)
+            self.price_plot.addItem(text_item)
+
+            # Add volume indicators at entry and exit points
+            self._add_volume_indicator(entry_x, entry_y, volume, position_type, "entry")
+            self._add_volume_indicator(exit_x, exit_y, volume, position_type, "exit")
+
+        except Exception as e:
+            print(f"❌ Error drawing trade connection line: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _add_volume_indicator(self, x, y, volume, position_type, trade_type):
+        """Add small volume indicator near trade marks"""
+        try:
+            # Offset for volume text placement
+            y_offset = 5 if trade_type == "entry" else -5
+
+            volume_text = f"V:{volume:.2f}"
+            volume_color = (34, 197, 94) if position_type == 'long' else (239, 68, 68)
+
+            volume_item = pg.TextItem(
+                text=volume_text,
+                color=volume_color,
+                anchor=(0.5, 0.5 if trade_type == "entry" else 0.5)
+            )
+            volume_item.setPos(x, y + y_offset)
+            self.price_plot.addItem(volume_item)
+
+        except Exception as e:
+            print(f"⚠️ Warning: Could not add volume indicator - {e}")
+
+    def _draw_unmatched_trades(self, unmatched_entries, unmatched_exits):
+        """Draw markers for unmatched trades with different styling"""
+        try:
+            # Draw unmatched entries
+            for entry in unmatched_entries:
+                color = pg.mkBrush(255, 165, 0)  # Orange for unmatched
+                symbol = 'x' if entry['status'] == 'unmatched' else 'star'
+
+                scatter = pg.ScatterPlotItem(
+                    x=[entry['index']], y=[entry['price']],
+                    symbol=symbol, size=12, brush=color, pen=pg.mkPen('white', width=2)
+                )
+                self.price_plot.addItem(scatter)
+
+                # Add warning text
+                warning_text = f"⚠️ {entry['status'].upper()}\nEntry: {entry['direction']}\nVol: {entry['volume']:.4f}"
+                text_item = pg.TextItem(
+                    text=warning_text,
+                    color=(255, 165, 0),
+                    anchor=(0.5, 0.5)
+                )
+                text_item.setPos(entry['index'], entry['price'] + 5)
+                self.price_plot.addItem(text_item)
+
+            # Draw unmatched exits
+            for exit_trade in unmatched_exits:
+                color = pg.mkBrush(255, 165, 0)  # Orange for unmatched
+                symbol = 'x' if exit_trade['status'] == 'unmatched' else 'star'
+
+                scatter = pg.ScatterPlotItem(
+                    x=[exit_trade['index']], y=[exit_trade['price']],
+                    symbol=symbol, size=12, brush=color, pen=pg.mkPen('white', width=2)
+                )
+                self.price_plot.addItem(scatter)
+
+                # Add warning text
+                warning_text = f"⚠️ {exit_trade['status'].upper()}\nExit: {exit_trade['direction']}\nVol: {exit_trade['volume']:.4f}"
+                text_item = pg.TextItem(
+                    text=warning_text,
+                    color=(255, 165, 0),
+                    anchor=(0.5, 0.5)
+                )
+                text_item.setPos(exit_trade['index'], exit_trade['price'] - 5)
+                self.price_plot.addItem(text_item)
+
+        except Exception as e:
+            print(f"❌ Error drawing unmatched trades: {e}")
 
     def _find_closest_timestamp_index(self, target_datetime, timestamps_list):
         """Find the closest timestamp index for trade marking"""
